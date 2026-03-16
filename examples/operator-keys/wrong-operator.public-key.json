@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "operatorId": "auth-layer-wrong",
+  "keyId": "auth-layer-wrong-ed25519-v1",
+  "algorithm": "ed25519",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAJSbEaH0MUyBvjicDXzVaX06XAhhOr88bURtXg8/ExJ8=\n-----END PUBLIC KEY-----\n",
+  "publicKeySha256": "sha256:3d3c95ccd670ac7c4147e2acdc48381700f38e6b2cce59ac7159e9a3bd9fb999",
+  "createdAt": "2026-03-15T00:00:00.000Z"
+}

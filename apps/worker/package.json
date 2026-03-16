@@ -1,0 +1,15 @@
+{
+  "name": "@auth-layer/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@auth-layer/core": "file:../../packages/core",
+    "dotenv": "^16.4.7"
+  }
+}

@@ -1,0 +1,1 @@
+{"algorithm":"ed25519","createdAt":"2026-03-15T00:00:00.000Z","keyId":"auth-layer-dev-ed25519-v1","operatorId":"auth-layer-dev","publicKeyPem":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA7qW1iCRvTCU4Zz2iLX7gSV8l2N4NLCVpNYD+ps5c/nQ=\n-----END PUBLIC KEY-----\n","publicKeySha256":"sha256:8a43c4ddb82b9e23bfec1a84756f259accd02fb37446ea571251ccbc8f1867c0","schemaVersion":1}

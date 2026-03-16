@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 3,
+  "checkpointId": "53d1e57f-6be1-4175-b717-7e3234fe4f74",
+  "treeSize": 2,
+  "lastLogIndex": 2,
+  "lastEntryHash": "sha256:7cf751b173fcbdc7889b4b0040776e331feaa826458d498e328322762e1766b9",
+  "rootHash": "sha256:435126d680dbe8703722214741abe7295e69511190b870539d5d477feada9336",
+  "issuedAt": "2026-03-15T14:53:49.725Z",
+  "operatorId": "auth-layer-dev",
+  "operatorKeyId": "auth-layer-dev-ed25519-v1",
+  "operatorPublicKeySha256": "sha256:8a43c4ddb82b9e23bfec1a84756f259accd02fb37446ea571251ccbc8f1867c0",
+  "signatureAlgorithm": "ed25519",
+  "logMode": "merkle-tree-v1",
+  "checkpointHash": "sha256:ee41ea5e66efb26c86db9bddbb1ec6cee7d141d8baa128b608747d68f7029cea",
+  "previousCheckpointId": "e7ebd4c4-600c-4462-9e82-02915289dbf2",
+  "previousCheckpointHash": "sha256:540b8af708267569bd22bc1252d5f6807635bcd23307ec9ed80534d565494786",
+  "signature": "r++2D8ts859jko1+lkQrcgS4j48NeRYzqKC1I/L2ZUAJUQ4DB336j3PrpuUvLdfvftSkBnE0w8FTg6zIE06gAg=="
+}

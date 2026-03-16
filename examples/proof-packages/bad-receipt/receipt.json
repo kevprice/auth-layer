@@ -1,0 +1,11 @@
+{
+  "id": "ffe2a183-aa83-4d82-b2c8-fd37e02e4854",
+  "logIndex": 1,
+  "merkleRoot": "sha256:5a8c9a2b4020751eea4b66493b86e47cea60f95ca9d0857b8a7c2dcaa44db0fa",
+  "proofBundleHash": "sha256:tampered-receipt-bundle",
+  "provider": "internal-hmac-v1",
+  "receivedAt": "2026-03-15T14:53:49.342Z",
+  "signature": "f0a2ff3830a0f7021a7341942b41360526cfe72e4c07adf3f29c3b01b5398ed0",
+  "transparencyCheckpointId": "e7ebd4c4-600c-4462-9e82-02915289dbf2",
+  "transparencyLogEntryHash": "sha256:bc842b11642bf5611c01afaef244dc6b8b2aa9c3c2f099333e05836674275f93"
+}
