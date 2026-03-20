@@ -12,13 +12,14 @@ const args = process.argv.slice(2);
 const packageDirectory = args[0];
 
 if (!packageDirectory) {
-  console.error("Usage: npm run proof:verify -- <package-directory> [--checkpoint <checkpoint.json>] [--operator-key <operator-public-key.json>] [--timestamp-secret <secret>]");
+  console.error("Usage: npm run proof:verify -- <package-directory> [--checkpoint <checkpoint.json>] [--operator-key <operator-public-key.json>] [--timestamp-secret <secret>] [--inspect-lineage]");
   process.exit(1);
 }
 
 const operatorKeyPaths: string[] = [];
 let checkpointPath: string | undefined;
 let timestampSecret: string | undefined;
+let inspectLineage = false;
 
 for (let index = 1; index < args.length; index += 1) {
   const argument = args[index];
@@ -40,6 +41,11 @@ for (let index = 1; index < args.length; index += 1) {
   if (argument === "--timestamp-secret") {
     timestampSecret = args[index + 1];
     index += 1;
+    continue;
+  }
+
+  if (argument === "--inspect-lineage") {
+    inspectLineage = true;
   }
 }
 
@@ -53,13 +59,17 @@ const checkpoint = checkpointPath
   : undefined;
 
 console.error("Verification order: 1) proof package integrity 2) Merkle inclusion proof 3) checkpoint signature 4) optional PDF approval receipt");
+if (inspectLineage) {
+  console.error("Lineage inspection: package integrity remains the trust boundary. Lineage metadata is package-authored provenance and does not by itself prove semantic equivalence.");
+}
 
 const report = await verifyProofPackageDirectory(resolve(packageDirectory), {
   timestampProvider: timestampSecret
     ? new InternalHmacTimestampProvider(timestampSecret)
     : undefined,
   trustedOperatorKeys,
-  checkpoint
+  checkpoint,
+  inspectLineage
 });
 
 console.log(JSON.stringify(report, null, 2));

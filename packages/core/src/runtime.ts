@@ -9,6 +9,7 @@ import { CaptureProcessor } from "./services/captureProcessor.js";
 import { ExtractionService } from "./services/extractionService.js";
 import { FetchService } from "./services/fetchService.js";
 import { HashService } from "./services/hashService.js";
+import { ContentAttestationService, Ed25519ContentAttestationSigner } from "./services/attestationService.js";
 import { PdfApprovalService, Ed25519PdfApprovalSigner } from "./services/pdfApprovalService.js";
 import { ProofPackageService } from "./services/proofPackageService.js";
 import { BrowserScreenshotService } from "./services/screenshotService.js";
@@ -30,6 +31,7 @@ export type RuntimeServices = {
   proofPackageService: ProofPackageService;
   transparencyLogService: TransparencyLogService;
   pdfApprovalService: PdfApprovalService;
+  attestationService: ContentAttestationService;
   watchlistService: WatchlistService;
   worker: PollingWorker;
 };
@@ -61,6 +63,9 @@ const createTransparencyCheckpointSigner = (): Ed25519TransparencyCheckpointSign
 
 const createPdfApprovalService = (): PdfApprovalService =>
   new PdfApprovalService(new Ed25519PdfApprovalSigner(createOperatorKeyConfig()));
+
+const createContentAttestationService = (): ContentAttestationService =>
+  new ContentAttestationService(new Ed25519ContentAttestationSigner(createOperatorKeyConfig()));
 
 export const resolveEmbeddedWorkerEnabled = (embeddedWorker?: boolean): boolean => {
   if (embeddedWorker !== undefined) {
@@ -102,6 +107,7 @@ export const createRuntimeServices = (options?: {
   const timestampProvider = new InternalHmacTimestampProvider(process.env.TIMESTAMP_SECRET ?? "change-me");
   const transparencyLogService = new TransparencyLogService(repository, createTransparencyCheckpointSigner());
   const pdfApprovalService = createPdfApprovalService();
+  const attestationService = createContentAttestationService();
   const screenshotService = new BrowserScreenshotService(
     process.env.RENDER_BROWSER_PATH?.trim() || undefined,
     {
@@ -118,7 +124,8 @@ export const createRuntimeServices = (options?: {
     timestampProvider,
     transparencyLogService,
     screenshotService,
-    pdfApprovalService
+    pdfApprovalService,
+    attestationService
   );
   const proofPackageService = new ProofPackageService(repository, objectStore, processor, transparencyLogService);
   const watchlistService = new WatchlistService(
@@ -134,5 +141,6 @@ export const createRuntimeServices = (options?: {
     worker.start();
   }
 
-  return { repository, objectStore, processor, proofPackageService, transparencyLogService, pdfApprovalService, watchlistService, worker };
+  return { repository, objectStore, processor, proofPackageService, transparencyLogService, pdfApprovalService, attestationService, watchlistService, worker };
 };
+

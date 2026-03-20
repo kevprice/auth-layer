@@ -1,4 +1,4 @@
-import type { CaptureComparison, CaptureDetail, CaptureRecord, CreateCaptureRequest, CreatePdfCaptureRequest, CreateWatchlistRequest, OperatorPublicKey, UpdateWatchlistRequest, Watchlist, WatchlistRun } from "@auth-layer/shared";
+import type { CaptureComparison, CaptureDetail, CaptureRecord, CreateCaptureRequest, CreateImageCaptureRequest, CreatePdfCaptureRequest, CreateWatchlistRequest, OperatorPublicKey, UpdateWatchlistRequest, Watchlist, WatchlistRun } from "@auth-layer/shared";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:4000";
 
@@ -67,6 +67,48 @@ export const getOperatorPublicKey = async (): Promise<OperatorPublicKey> => {
 
 
 
+
+export const createImageCapture = async (input: {
+  file: File;
+  caption?: string;
+  altText?: string;
+  capturedAt?: string;
+  publishedAt?: string;
+  derivativeOfContentHash?: string;
+  attestations?: CreateImageCaptureRequest["attestations"];
+}): Promise<CaptureRecord> => {
+  const formData = new FormData();
+  formData.set("file", input.file);
+  formData.set("fileName", input.file.name);
+  formData.set("mediaType", input.file.type || "application/octet-stream");
+
+  if (input.caption) {
+    formData.set("caption", input.caption);
+  }
+  if (input.altText) {
+    formData.set("altText", input.altText);
+  }
+  if (input.capturedAt) {
+    formData.set("capturedAt", input.capturedAt);
+  }
+  if (input.publishedAt) {
+    formData.set("publishedAt", input.publishedAt);
+  }
+  if (input.derivativeOfContentHash) {
+    formData.set("derivativeOfContentHash", input.derivativeOfContentHash);
+  }
+  if (input.attestations?.length) {
+    formData.set("attestations", JSON.stringify(input.attestations));
+  }
+
+  const response = await fetch(`${API_BASE}/api/images`, {
+    method: "POST",
+    body: formData
+  });
+
+  const data = await readJson<{ capture: CaptureRecord }>(response);
+  return data.capture;
+};
 export const createPdfCapture = async (input: {
   file: File;
   approval?: CreatePdfCaptureRequest["approval"];
@@ -146,3 +188,4 @@ export const retryWatchlist = async (watchlistId: string): Promise<WatchlistRun>
   const data = await readJson<{ run: WatchlistRun }>(response);
   return data.run;
 };
+

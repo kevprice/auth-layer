@@ -25,6 +25,8 @@ export const buildEvidenceLayerSummaries = (
   detail: Pick<CaptureDetail, "capture" | "canonicalContent" | "metadata" | "proofBundle" | "approvalReceipt">
 ): EvidenceLayerSummary[] => {
   const isPdf = detail.capture.artifactType === "pdf-file";
+  const isImage = detail.capture.artifactType === "image-file";
+  const isArticle = detail.capture.artifactType === "article-publish";
   const screenshotHash = renderedScreenshotHash(detail.capture.renderedEvidence);
 
   return [
@@ -34,18 +36,28 @@ export const buildEvidenceLayerSummaries = (
       available: Boolean(detail.capture.rawSnapshotHash),
       proves: isPdf
         ? "The exact uploaded PDF bytes were preserved as observed by the operator."
-        : "The exact fetched response body was preserved as observed by the operator.",
+        : isImage
+          ? "The exact uploaded image bytes were preserved as observed by the operator."
+          : isArticle
+            ? "The deterministic WordPress publish HTML prepared at publish time was preserved as observed by the operator."
+            : "The exact fetched response body was preserved as observed by the operator.",
       doesNotProve: isPdf
         ? "It does not prove who originally created the document or when it was first authored."
-        : "It does not prove when the publisher originally created the page or what changed before capture.",
+        : isImage
+          ? "It does not prove who originally created the image or whether identity claims about it are true by default."
+          : isArticle
+            ? "It does not prove that author or publisher identity claims are trusted by default, only that this publish payload was packaged and logged."
+            : "It does not prove when the publisher originally created the page or what changed before capture.",
       hashReference: detail.capture.rawSnapshotHash,
-      exportReference: isPdf ? "raw-snapshot.json + source-file.pdf" : "raw-snapshot.json + raw-snapshot.html"
+      exportReference: isPdf ? "raw-snapshot.json + source-file.pdf" : isImage ? "source-image.bin" : "raw-snapshot.json + raw-snapshot.html"
     },
     {
       id: "canonical-content",
       label: "Canonical content",
       available: Boolean(detail.canonicalContent),
-      proves: "Deterministic extracted content can be compared across captures without relying on full-page HTML equality.",
+      proves: isArticle
+        ? "Deterministic article content derived from the WordPress publish payload can be compared across revisions without trusting the live page."
+        : "Deterministic extracted content can be compared across captures without relying on full-page HTML equality.",
       doesNotProve: "It does not prove publisher intent, authorship, or the truth of extracted statements.",
       hashReference: detail.capture.canonicalContentHash,
       exportReference: "canonical-content.json"
@@ -54,7 +66,9 @@ export const buildEvidenceLayerSummaries = (
       id: "metadata",
       label: "Metadata",
       available: Boolean(detail.metadata),
-      proves: "Normalized citation-like fields such as title, author, and claimed publication date were extracted and hashed separately.",
+      proves: isArticle
+        ? "Normalized article metadata such as title, byline claims, site identifier, and claimed timestamps were extracted and hashed separately."
+        : "Normalized citation-like fields such as title, author, and claimed publication date were extracted and hashed separately.",
       doesNotProve: "It does not independently validate the truth of claimed author or claimed publication date fields.",
       hashReference: detail.capture.metadataHash,
       exportReference: "metadata.json"
@@ -76,6 +90,15 @@ export const buildEvidenceLayerSummaries = (
       doesNotProve: "It does not prove original publisher intent, original creation time, or uploader approval.",
       hashReference: detail.capture.proofBundleHash,
       exportReference: "proof-bundle.json + transparency-export.json"
+    },
+    {
+      id: "attestations",
+      label: "Attestations",
+      available: Boolean(detail.capture.artifacts.attestationBundleStorageKey),
+      proves: "When present, authenticated human actions such as publish, update, or approval were recorded as additive attestation metadata inside the package.",
+      doesNotProve: "Attestations are informational provenance claims and are not required trust roots for offline verification.",
+      hashReference: detail.proofBundle?.attestationBundleHash,
+      exportReference: detail.capture.artifacts.attestationBundleStorageKey ? "attestations.json" : undefined
     },
     {
       id: "uploader-approval",

@@ -1,3 +1,6 @@
+import type { AttestationBundle, AttestationSummary, ContentAttestationActor, ContentAttestationInput } from "./attestations.js";
+import type { LineageBundle, LineageSummary } from "./lineage.js";
+
 export type CaptureStatus =
   | "queued"
   | "fetching"
@@ -19,27 +22,107 @@ export type CaptureEventType =
 
 export type PageKind = "article" | "generic" | "failed";
 export type ContentExtractionStatus = "success" | "fallback" | "failed";
-export type ArtifactKind = "raw-html" | "raw-pdf" | "canonical-content" | "metadata" | "proof-bundle" | "screenshot" | "approval-receipt";
+export type ArtifactKind = "raw-html" | "raw-pdf" | "raw-image" | "canonical-content" | "metadata" | "proof-bundle" | "screenshot" | "approval-receipt" | "attestation-bundle";
 export type FieldSourceKind = "meta-tag" | "link-rel" | "document-title" | "readability" | "dom" | "fallback" | "not-found";
 export type CanonicalBlockType = "heading" | "paragraph" | "blockquote" | "list-item";
 export type SignatureAlgorithm = "ed25519";
 export type TransparencyLogMode = "legacy-hash-chain" | "merkle-tree-v1";
 export type TransparencyProofMode = "legacy-exact-entry" | "merkle-v1";
 export type CaptureComparisonBasis = "capture-id" | "captured-at";
-export type CaptureArtifactType = "url-capture" | "pdf-file";
-export type WatchlistStatus = "active" | "paused";
+export type CaptureArtifactType = "url-capture" | "pdf-file" | "image-file" | "article-publish";
+export type WatchlistStatus = "active" | "paused" | "expired" | "archived";
 export type WatchlistRunStatus = "started" | "completed" | "failed";
 export type WatchlistDeliveryKind = "local" | "webhook" | "json";
 export type WatchlistDeliveryStatus = "recorded" | "sent" | "failed";
 export type WatchlistCaptureHealth = "success" | "degraded" | "failed";
+export type WatchlistFetchOutcome = "ok_unchanged" | "ok_changed" | "redirected" | "not_found" | "gone" | "blocked" | "server_error" | "network_error" | "timeout" | "content_type_changed";
+export type WatchlistAvailabilityTransition = "available_to_missing" | "missing_to_available";
 export type WatchlistEventType = "watchlist.run.completed" | "watchlist.change.detected" | "watchlist.run.failed" | "watchlist.delivery.failed";
 export type WatchlistRunVerdict = "changed" | "unchanged" | "failed" | "baseline";
 export type PdfApprovalScope = "file-hash" | "exported-artifact" | "publication-intent";
 export type PdfApprovalMethod = "account-signature" | "passkey" | "external-signer";
-export type EvidenceLayerId = "raw-snapshot" | "canonical-content" | "metadata" | "rendered-evidence" | "operator-observation" | "uploader-approval";
+export type EvidenceLayerId = "raw-snapshot" | "canonical-content" | "metadata" | "rendered-evidence" | "operator-observation" | "uploader-approval" | "attestations";
 
 export type CreateCaptureRequest = {
   url: string;
+};
+
+export type WordPressApprovalPolicy = "none" | "passkey-on-publish" | "passkey-on-update" | "passkey-on-all";
+
+export type WordPressArticlePayload = {
+  schemaVersion?: number;
+  siteIdentifier: string;
+  siteUrl: string;
+  postId: string;
+  revisionId?: string;
+  publishedUrl: string;
+  canonicalUrl: string;
+  title: string;
+  bodyHtml: string;
+  excerpt?: string;
+  authorDisplayName?: string;
+  publishedAt?: string;
+  updatedAt?: string;
+  categories?: string[];
+  tags?: string[];
+  featuredImageUrl?: string;
+  language?: string;
+};
+
+export type WordPressArticleApprovalInput = {
+  policy?: WordPressApprovalPolicy;
+  actor?: ContentAttestationActor;
+  notes?: string;
+};
+
+export type CreateWordPressArticleRequest = {
+  article: WordPressArticlePayload;
+  action?: "publish" | "update";
+  approval?: WordPressArticleApprovalInput;
+  attestations?: ContentAttestationInput[];
+};
+
+export type WordPressApprovalChallenge = {
+  id: string;
+  article: WordPressArticlePayload;
+  action: "publish" | "update";
+  requestedAt: string;
+  actor?: ContentAttestationActor;
+  policy: WordPressApprovalPolicy;
+  attestations?: ContentAttestationInput[];
+  notes?: string;
+};
+
+export type CompleteWordPressApprovalRequest = {
+  challengeId: string;
+  actor?: ContentAttestationActor;
+  notes?: string;
+};
+
+export type ArticleDiscoveryManifest = {
+  schemaVersion: number;
+  manifestType: "auth-layer-article-discovery";
+  siteIdentifier?: string;
+  canonicalUrl: string;
+  latestCaptureId: string;
+  artifactType: CaptureArtifactType;
+  title?: string;
+  publisher?: string;
+  publishedAt?: string;
+  updatedAt?: string;
+  captureExportUrl: string;
+  transparencyLogUrl: string;
+};
+
+export type CreateImageCaptureRequest = {
+  fileName: string;
+  mediaType: string;
+  caption?: string;
+  altText?: string;
+  capturedAt?: string;
+  publishedAt?: string;
+  derivativeOfContentHash?: string;
+  attestations?: ContentAttestationInput[];
 };
 
 export type CreatePdfCaptureRequest = {
@@ -53,17 +136,30 @@ export type CreatePdfCaptureRequest = {
   };
 };
 
+export type WatchlistBurstConfig = {
+  enabled: boolean;
+  intervalSeconds?: number;
+  durationSeconds?: number;
+  burstUntil?: string;
+};
+
 export type CreateWatchlistRequest = {
   url: string;
-  intervalMinutes: number;
+  intervalMinutes?: number;
+  intervalSeconds?: number;
   webhookUrl?: string;
   emitJson?: boolean;
+  expiresAt?: string;
+  burstConfig?: WatchlistBurstConfig;
 };
 
 export type UpdateWatchlistRequest = {
   intervalMinutes?: number;
+  intervalSeconds?: number;
   webhookUrl?: string | null;
   emitJson?: boolean;
+  expiresAt?: string | null;
+  burstConfig?: WatchlistBurstConfig | null;
   status?: WatchlistStatus;
 };
 
@@ -96,6 +192,39 @@ export type RenderedEvidence = {
   };
   screenshotHash?: string;
   userAgentLabel?: string;
+};
+
+export type ArticleObject = {
+  type: "article";
+  siteIdentifier: string;
+  siteUrl: string;
+  postId: string;
+  revisionId?: string;
+  publishedUrl: string;
+  canonicalUrl: string;
+  excerpt?: string;
+  categories?: string[];
+  tags?: string[];
+  featuredImageUrl?: string;
+  authorDisplayName?: string;
+  publishedAt?: string;
+  updatedAt?: string;
+  language?: string;
+};
+
+export type ImageObject = {
+  type: "image";
+  mimeType: string;
+  byteLength: number;
+  contentHash: string;
+  width?: number;
+  height?: number;
+  filename?: string;
+  caption?: string;
+  altText?: string;
+  capturedAt?: string;
+  publishedAt?: string;
+  derivativeOfContentHash?: string;
 };
 
 export type RawSnapshot = {
@@ -163,6 +292,8 @@ export type CanonicalContent = {
   subtitle?: string;
   author?: string;
   publishedAtClaimed?: string;
+  imageObject?: ImageObject;
+  articleObject?: ArticleObject;
   blocks: CanonicalBlock[];
   bodyMarkdown: string;
   imageUrls?: string[];
@@ -187,6 +318,8 @@ export type CanonicalMetadata = {
   subtitle?: string;
   author?: string;
   publishedAtClaimed?: string;
+  imageObject?: ImageObject;
+  articleObject?: ArticleObject;
   language?: string;
   extractorVersion: string;
   fieldProvenance: FieldProvenance;
@@ -206,6 +339,22 @@ export type PdfCanonicalMetadata = CanonicalMetadata & {
   mediaType: string;
   byteSize: number;
   textAvailable: boolean;
+};
+
+export type ImageCanonicalContent = CanonicalContent & {
+  artifactType: "image-file";
+  fileName: string;
+  mediaType: string;
+  byteSize: number;
+  imageObject: ImageObject;
+};
+
+export type ImageCanonicalMetadata = CanonicalMetadata & {
+  artifactType: "image-file";
+  fileName: string;
+  mediaType: string;
+  byteSize: number;
+  imageObject: ImageObject;
 };
 
 export type ProofBundle = {
@@ -230,6 +379,8 @@ export type ProofBundle = {
   screenshotHash?: string;
   canonicalContentHash: string;
   metadataHash: string;
+  lineageBundleHash?: string;
+  attestationBundleHash?: string;
   createdAt: string;
   receiptId?: string;
 };
@@ -308,12 +459,16 @@ export type TransparencyReceipt = {
 
 export type CaptureArtifacts = {
   rawHtmlStorageKey?: string;
+  articleInputStorageKey?: string;
   rawPdfStorageKey?: string;
+  rawImageStorageKey?: string;
+  imageInputStorageKey?: string;
   canonicalContentStorageKey?: string;
   metadataStorageKey?: string;
   proofBundleStorageKey?: string;
   screenshotStorageKey?: string;
   approvalReceiptStorageKey?: string;
+  attestationBundleStorageKey?: string;
 };
 
 export type PdfApprovalReceipt = {
@@ -355,6 +510,8 @@ export type CaptureRecord = {
   canonicalContentHash?: string;
   metadataHash?: string;
   proofBundleHash?: string;
+  lineageBundleHash?: string;
+  attestationBundleHash?: string;
   proofReceiptId?: string;
   screenshotHash?: string;
   extractorVersion: string;
@@ -396,6 +553,7 @@ export type CaptureDetail = {
   proofBundle?: ProofBundle;
   receipt?: TransparencyReceipt;
   approvalReceipt?: PdfApprovalReceipt;
+  attestationBundle?: AttestationBundle;
 };
 
 export type UrlCaptureHistoryItem = Pick<
@@ -532,9 +690,13 @@ export type CaptureTransparencyExport = {
   comparisonSummary: CaptureComparisonSummary;
   evidenceLayers: EvidenceLayerSummary[];
   pdfQualityDiagnostics?: PdfQualityDiagnostics;
+  lineageSummary?: LineageSummary;
+  attestationSummary?: AttestationSummary;
   capture: CaptureRecord;
   events: CaptureLifecycleEvent[];
   artifactReferences: ArtifactReference[];
+  lineageBundle?: LineageBundle;
+  attestationBundle?: AttestationBundle;
   canonicalContent?: CanonicalContent;
   metadata?: CanonicalMetadata;
   proofBundle?: ProofBundle;
@@ -564,6 +726,8 @@ export type ProofPackageManifest = {
   requestedUrl: string;
   finalUrl?: string;
   proofBundleHash?: string;
+  lineageBundleHash?: string;
+  attestationBundleHash?: string;
   canonicalContentHash?: string;
   metadataHash?: string;
   rawSnapshotHash?: string;
@@ -575,11 +739,14 @@ export type ProofPackageManifest = {
     rawSnapshot: ProofPackageManifestFile;
     rawHtml: ProofPackageManifestFile;
     rawPdf?: ProofPackageManifestFile;
+    rawImage?: ProofPackageManifestFile;
     screenshot?: ProofPackageManifestFile;
     captureRecord: ProofPackageManifestFile;
     canonicalContent: ProofPackageManifestFile;
     metadata: ProofPackageManifestFile;
     diagnostics?: ProofPackageManifestFile;
+    lineageBundle?: ProofPackageManifestFile;
+    attestationBundle?: ProofPackageManifestFile;
     proofBundle: ProofPackageManifestFile;
     receipt: ProofPackageManifestFile;
     approvalReceipt?: ProofPackageManifestFile;
@@ -636,7 +803,16 @@ export type ProofPackageDiagnostics = {
   };
   evidenceLayers?: EvidenceLayerSummary[];
   pdfQualityDiagnostics?: PdfQualityDiagnostics;
+  lineageSummary?: LineageSummary;
+  attestationSummary?: AttestationSummary;
 };
+export type AttestationVerificationSummary = AttestationSummary & {
+  verifiedCount: number;
+  invalidCount: number;
+  unverifiedCount: number;
+  trustedKeyMaterialAvailable: boolean;
+};
+
 export type ProofPackageVerificationCheck = {
   name: string;
   ok: boolean;
@@ -648,6 +824,11 @@ export type ProofPackageVerificationReport = {
   packagePath: string;
   captureId?: string;
   checks: ProofPackageVerificationCheck[];
+  attestations?: AttestationVerificationSummary;
+  lineage?: LineageSummary & {
+    nodes?: LineageBundle["contentObjects"];
+    edges?: LineageBundle["edges"];
+  };
 };
 
 
@@ -660,10 +841,20 @@ export type Watchlist = {
   requestedUrl: string;
   normalizedRequestedUrl: string;
   intervalMinutes: number;
+  intervalSeconds: number;
   status: WatchlistStatus;
   webhookUrl?: string;
   emitJson: boolean;
+  expiresAt?: string;
+  burstConfig?: WatchlistBurstConfig;
   lastRunAt?: string;
+  lastCheckedAt?: string;
+  lastSuccessfulFetchAt?: string;
+  lastStateChangeAt?: string;
+  lastHttpStatus?: number;
+  lastResolvedUrl?: string;
+  failureCount: number;
+  lastErrorCode?: string;
   nextRunAt: string;
   latestRunId?: string;
   latestRun?: WatchlistRun;
@@ -686,6 +877,13 @@ export type WatchlistRun = {
   newerCaptureId?: string;
   normalizedRequestedUrl: string;
   status: WatchlistRunStatus;
+  outcome?: WatchlistFetchOutcome;
+  httpStatus?: number;
+  resolvedUrl?: string;
+  previousResolvedUrl?: string;
+  stateChanged?: boolean;
+  availabilityTransition?: WatchlistAvailabilityTransition;
+  redirectChanged?: boolean;
   changeDetected?: boolean;
   changeSummary: string[];
   proofBundleHashes: {
@@ -733,6 +931,13 @@ export type WatchlistResultPayload = {
   normalizedRequestedUrl: string;
   runTimestamp: string;
   verdict: WatchlistRunVerdict;
+  outcome?: WatchlistFetchOutcome;
+  httpStatus?: number;
+  resolvedUrl?: string;
+  previousResolvedUrl?: string;
+  stateChanged?: boolean;
+  availabilityTransition?: WatchlistAvailabilityTransition;
+  redirectChanged?: boolean;
   comparePath?: string;
   comparePermalink?: string;
   olderCaptureId?: string;
@@ -767,6 +972,17 @@ export type WatchlistResultPayload = {
   deliveryError?: string;
   emittedAt: string;
 };
+
+
+
+
+export * from "./attestations.js";
+export * from "./lineage.js";
+
+
+
+
+
 
 
 

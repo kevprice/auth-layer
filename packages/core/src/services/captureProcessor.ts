@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import type {
+  AttestationBundle,
   CanonicalContent,
   CanonicalMetadata,
   CaptureComparison,
@@ -9,8 +10,10 @@ import type {
   CaptureRecord,
   CaptureScope,
   CaptureTransparencyExport,
+  ContentAttestationInput,
   ProofBundle,
-  RawSnapshot
+  RawSnapshot,
+  WordPressArticlePayload
 } from "@auth-layer/shared";
 
 import type { CaptureRepository } from "../repositories/captureRepository.js";
@@ -18,10 +21,14 @@ import type { ObjectStore } from "../storage/objectStore.js";
 import { hashStableValue } from "../utils/stableJson.js";
 import { compareCaptureDetails, compareWithPreviousCapture, type ComparisonSource } from "./comparisonService.js";
 import { buildEvidenceLayerSummaries, derivePdfQualityDiagnostics } from "../utils/evidenceSummaries.js";
+import { hashAttestationBundle, summarizeAttestationBundle } from "@auth-layer/shared";
 import type { ExtractionService } from "./extractionService.js";
+import { ArticleService, WORDPRESS_ARTICLE_EXTRACTOR_VERSION } from "./articleService.js";
+import { ImageService } from "./imageService.js";
 import { PDF_EXTRACTOR_VERSION, PdfService } from "./pdfService.js";
 import type { FetchService } from "./fetchService.js";
 import type { HashService } from "./hashService.js";
+import type { ContentAttestationService } from "./attestationService.js";
 import type { PdfApprovalService } from "./pdfApprovalService.js";
 import type { ScreenshotService } from "./screenshotService.js";
 import type { TimestampProvider } from "./timestampProvider.js";
@@ -34,7 +41,7 @@ const proofStatement =
 
 const buildCaptureScope = (capture: Partial<CaptureRecord>): CaptureScope => ({
   rawHttpBodyPreserved: Boolean(capture.artifacts?.rawHtmlStorageKey),
-  rawFilePreserved: Boolean(capture.artifacts?.rawPdfStorageKey),
+  rawFilePreserved: Boolean(capture.artifacts?.rawPdfStorageKey || capture.artifacts?.rawImageStorageKey),
   canonicalContentExtracted: Boolean(capture.artifacts?.canonicalContentStorageKey),
   metadataExtracted: Boolean(capture.artifacts?.metadataStorageKey),
   screenshotPreserved: Boolean(capture.artifacts?.screenshotStorageKey),
@@ -57,6 +64,20 @@ const observedAtForCapture = (capture: CaptureRecord): string => capture.capture
 const renderedScreenshotHash = (renderedEvidence?: CaptureRecord["renderedEvidence"]): string | undefined =>
   renderedEvidence?.screenshot?.hash ?? renderedEvidence?.screenshotHash;
 
+type StoredArticleCaptureInput = {
+  article: WordPressArticlePayload;
+  action?: "publish" | "update";
+  attestations?: ContentAttestationInput[];
+};
+
+type StoredImageCaptureInput = {
+  caption?: string;
+  altText?: string;
+  capturedAt?: string;
+  publishedAt?: string;
+  derivativeOfContentHash?: string;
+  attestations?: ContentAttestationInput[];
+};
 type CaptureComparisonSelector =
   | {
       basis: "capture-id";
@@ -71,6 +92,8 @@ type CaptureComparisonSelector =
 
 export class CaptureProcessor {
   private readonly pdfService = new PdfService();
+  private readonly imageService = new ImageService();
+  private readonly articleService = new ArticleService();
 
   constructor(
     private readonly repository: CaptureRepository,
@@ -81,12 +104,19 @@ export class CaptureProcessor {
     private readonly timestampProvider: TimestampProvider,
     private readonly transparencyLogService: TransparencyLogService,
     private readonly screenshotService?: ScreenshotService,
-    private readonly pdfApprovalService?: PdfApprovalService
+    private readonly pdfApprovalService?: PdfApprovalService,
+    private readonly attestationService?: ContentAttestationService
   ) {}
 
   async processClaimedCapture(capture: CaptureRecord): Promise<CaptureRecord> {
     if (capture.artifactType === "pdf-file") {
       return this.processClaimedPdfCapture(capture);
+    }
+    if (capture.artifactType === "image-file") {
+      return this.processClaimedImageCapture(capture);
+    }
+    if (capture.artifactType === "article-publish") {
+      return this.processClaimedArticleCapture(capture);
     }
     let stage: CaptureRecord["status"] = "fetching";
 
@@ -288,7 +318,374 @@ export class CaptureProcessor {
   }
 
 
+
+  private async processClaimedArticleCapture(capture: CaptureRecord): Promise<CaptureRecord> {
+    if (capture.artifactType === "article-publish") {
+      return this.processClaimedArticleCapture(capture);
+    }
+    let stage: CaptureRecord["status"] = "fetching";
+
+    try {
+      const rawHtmlStorageKey = capture.artifacts.rawHtmlStorageKey;
+      const articleInputStorageKey = capture.artifacts.articleInputStorageKey;
+      if (!rawHtmlStorageKey || !articleInputStorageKey) {
+        throw new Error("Stored article publish inputs are missing for this queued article capture");
+      }
+
+      const [rawHtml, articleInput] = await Promise.all([
+        this.objectStore.getText(rawHtmlStorageKey),
+        this.loadArtifactJson<StoredArticleCaptureInput>(articleInputStorageKey)
+      ]);
+      if (!rawHtml || !articleInput?.article) {
+        throw new Error("Stored article publish payload could not be loaded");
+      }
+
+      const article = this.articleService.normalizePayload(articleInput.article);
+      const finalUrl = article.canonicalUrl || capture.requestedUrl;
+      const fetchedAt = capture.fetchedAt ?? capture.createdAt;
+      const rawSnapshotHash = capture.rawSnapshotHash ?? hashStableValue({ finalUrl, rawHtml, article });
+
+      await this.repository.recordFetchCompleted({
+        captureId: capture.id,
+        finalUrl,
+        fetchedAt,
+        httpStatus: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        contentType: "text/html",
+        charset: "utf-8",
+        rawSnapshotHash,
+        rawSourceArtifact: {
+          kind: "raw-html",
+          storageKey: rawHtmlStorageKey,
+          contentHash: hashStableValue(rawHtml),
+          contentType: "text/html; charset=utf-8",
+          byteSize: Buffer.byteLength(rawHtml, "utf8")
+        }
+      });
+      stage = "extracting";
+
+      const extraction = this.articleService.extract(article, {
+        sourceLabel: capture.sourceLabel ?? article.title,
+        mediaType: capture.mediaType ?? "text/html; charset=utf-8",
+        byteSize: capture.byteSize ?? Buffer.byteLength(rawHtml, "utf8")
+      });
+      const canonicalContentStorageKey = artifactPath(capture.id, "canonical-content.json");
+      const metadataStorageKey = artifactPath(capture.id, "metadata.json");
+      await Promise.all([
+        this.objectStore.putJson(canonicalContentStorageKey, extraction.canonicalContent),
+        this.objectStore.putJson(metadataStorageKey, extraction.metadata)
+      ]);
+
+      const canonicalContentHash = this.hashService.hashCanonicalContent(extraction.canonicalContent);
+      const metadataHash = this.hashService.hashMetadata(extraction.metadata);
+
+      await this.repository.recordDerivationCompleted({
+        captureId: capture.id,
+        pageKind: extraction.pageKind,
+        extractionStatus: extraction.extractionStatus,
+        claimedPublishedAt: extraction.metadata.publishedAtClaimed,
+        canonicalContent: extraction.canonicalContent,
+        metadata: extraction.metadata,
+        canonicalContentHash,
+        metadataHash,
+        canonicalContentArtifact: {
+          kind: "canonical-content",
+          storageKey: canonicalContentStorageKey,
+          contentHash: canonicalContentHash,
+          contentType: "application/json; charset=utf-8",
+          byteSize: jsonByteSize(extraction.canonicalContent)
+        },
+        metadataArtifact: {
+          kind: "metadata",
+          storageKey: metadataStorageKey,
+          contentHash: metadataHash,
+          contentType: "application/json; charset=utf-8",
+          byteSize: jsonByteSize(extraction.metadata)
+        }
+      });
+      stage = "timestamping";
+
+      const attestationBundle = this.attestationService && articleInput.attestations?.length
+        ? await this.attestationService.issueBundle({
+            subjectContentHash: canonicalContentHash,
+            attestations: articleInput.attestations
+          })
+        : undefined;
+      const attestationBundleHash = attestationBundle ? await hashAttestationBundle(attestationBundle) : undefined;
+      const captureScope = buildCaptureScope({ ...capture, artifacts: { ...capture.artifacts, canonicalContentStorageKey, metadataStorageKey } });
+      const hashes = this.hashService.buildProofBundle({
+        artifactType: "article-publish",
+        captureId: capture.id,
+        sourceLabel: capture.sourceLabel ?? article.title,
+        fileName: capture.fileName,
+        mediaType: capture.mediaType,
+        byteSize: capture.byteSize,
+        requestedUrl: capture.requestedUrl,
+        finalUrl,
+        pageKind: extraction.pageKind,
+        extractorVersion: WORDPRESS_ARTICLE_EXTRACTOR_VERSION,
+        normalizationVersion: extraction.canonicalContent.normalizationVersion,
+        rawSnapshotSchemaVersion: 1,
+        canonicalContentSchemaVersion: extraction.canonicalContent.schemaVersion,
+        metadataSchemaVersion: extraction.metadata.schemaVersion,
+        captureScope,
+        rawSnapshotHash,
+        canonicalContentHash,
+        metadataHash,
+        attestationBundleHash,
+        createdAt: new Date().toISOString()
+      });
+
+      const issuedReceipt = await this.timestampProvider.issue(hashes.proofBundleHash);
+      const transparency = await this.transparencyLogService.appendCapture(capture.id, hashes.proofBundleHash, issuedReceipt);
+      const receipt = transparency.receipt ?? issuedReceipt;
+      const proofBundleStorageKey = artifactPath(capture.id, "proof-bundle.json");
+      await this.objectStore.putJson(proofBundleStorageKey, hashes.proofBundle);
+
+      const previousCompletedCapture = (await this.repository.listCapturesForUrl(capture.normalizedRequestedUrl)).find(
+        (candidate) => candidate.id !== capture.id && candidate.status === "completed"
+      );
+      const previousDetail = previousCompletedCapture ? await this.loadCaptureDetail(previousCompletedCapture.id) : undefined;
+      const comparison = compareWithPreviousCapture(
+        buildComparisonSource(
+          { id: capture.id, canonicalContentHash, metadataHash, claimedPublishedAt: extraction.metadata.publishedAtClaimed },
+          extraction.metadata
+        ),
+        previousDetail
+          ? buildComparisonSource(
+              {
+                id: previousDetail.capture.id,
+                canonicalContentHash: previousDetail.capture.canonicalContentHash,
+                metadataHash: previousDetail.capture.metadataHash,
+                claimedPublishedAt: previousDetail.capture.claimedPublishedAt
+              },
+              previousDetail.metadata
+            )
+          : undefined
+      );
+
+      let completedCapture = await this.repository.recordTimestampCompleted({
+        captureId: capture.id,
+        capturedAt: receipt.receivedAt,
+        proofBundle: hashes.proofBundle,
+        proofBundleHash: hashes.proofBundleHash,
+        receipt,
+        proofBundleArtifact: {
+          kind: "proof-bundle",
+          storageKey: proofBundleStorageKey,
+          contentHash: hashes.proofBundleHash,
+          contentType: "application/json; charset=utf-8",
+          byteSize: jsonByteSize(hashes.proofBundle)
+        },
+        comparedToCaptureId: comparison.comparedToCaptureId,
+        contentChangedFromPrevious: comparison.contentChangedFromPrevious,
+        metadataChangedFromPrevious: comparison.metadataChangedFromPrevious,
+        titleChangedFromPrevious: comparison.titleChangedFromPrevious,
+        authorChangedFromPrevious: comparison.authorChangedFromPrevious,
+        claimedPublishedAtChangedFromPrevious: comparison.claimedPublishedAtChangedFromPrevious
+      });
+
+      if (attestationBundle) {
+        const attestationStorageKey = artifactPath(capture.id, "attestations.json");
+        await this.objectStore.putJson(attestationStorageKey, attestationBundle);
+        completedCapture = await this.repository.recordAttestationBundle({
+          captureId: capture.id,
+          attestationBundle,
+          artifact: {
+            kind: "attestation-bundle",
+            storageKey: attestationStorageKey,
+            contentHash: attestationBundleHash ?? hashStableValue(attestationBundle),
+            contentType: "application/json; charset=utf-8",
+            byteSize: jsonByteSize(attestationBundle)
+          }
+        });
+      }
+
+      return completedCapture;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown article capture failure";
+      const errorCode = error instanceof Error ? error.name : "ArticleCaptureError";
+      return this.repository.recordFailure({
+        captureId: capture.id,
+        stageStatus: stage,
+        errorCode: `${stage}:${errorCode}`,
+        errorMessage: message
+      });
+    }
+  }
+  private async processClaimedImageCapture(capture: CaptureRecord): Promise<CaptureRecord> {
+    if (capture.artifactType === "article-publish") {
+      return this.processClaimedArticleCapture(capture);
+    }
+    let stage: CaptureRecord["status"] = "fetching";
+
+    try {
+      const rawImageStorageKey = capture.artifacts.rawImageStorageKey;
+      if (!rawImageStorageKey) {
+        throw new Error("Raw image artifact is missing for this queued image capture");
+      }
+
+      const rawImageObject = await this.objectStore.getObject(rawImageStorageKey);
+      if (!rawImageObject) {
+        throw new Error("Stored image artifact could not be loaded");
+      }
+
+      const imageInput = capture.artifacts.imageInputStorageKey
+        ? await this.loadArtifactJson<StoredImageCaptureInput>(capture.artifacts.imageInputStorageKey)
+        : undefined;
+      const fetchedAt = capture.fetchedAt ?? capture.createdAt;
+      const rawSnapshotHash = capture.rawSnapshotHash ?? this.hashService.hashImageFile(rawImageObject.body);
+      await this.repository.recordFetchCompleted({
+        captureId: capture.id,
+        finalUrl: capture.requestedUrl,
+        fetchedAt,
+        httpStatus: 200,
+        headers: {},
+        contentType: capture.mediaType ?? rawImageObject.contentType,
+        rawSnapshotHash,
+        rawSourceArtifact: {
+          kind: "raw-image",
+          storageKey: rawImageStorageKey,
+          contentHash: rawSnapshotHash,
+          contentType: capture.mediaType ?? rawImageObject.contentType,
+          byteSize: capture.byteSize ?? rawImageObject.body.byteLength
+        }
+      });
+      stage = "extracting";
+
+      const extraction = this.imageService.extract({
+        buffer: rawImageObject.body,
+        sourceUrl: capture.requestedUrl,
+        sourceLabel: capture.sourceLabel ?? capture.fileName ?? capture.requestedUrl,
+        fileName: capture.fileName ?? "image.bin",
+        mediaType: capture.mediaType ?? rawImageObject.contentType ?? "application/octet-stream",
+        byteSize: capture.byteSize ?? rawImageObject.body.byteLength,
+        contentHash: rawSnapshotHash,
+        caption: imageInput?.caption,
+        altText: imageInput?.altText,
+        capturedAt: imageInput?.capturedAt,
+        publishedAt: imageInput?.publishedAt,
+        derivativeOfContentHash: imageInput?.derivativeOfContentHash
+      });
+
+      const canonicalContentStorageKey = artifactPath(capture.id, "canonical-content.json");
+      const metadataStorageKey = artifactPath(capture.id, "metadata.json");
+      await Promise.all([
+        this.objectStore.putJson(canonicalContentStorageKey, extraction.canonicalContent),
+        this.objectStore.putJson(metadataStorageKey, extraction.metadata)
+      ]);
+
+      const canonicalContentHash = this.hashService.hashCanonicalContent(extraction.canonicalContent);
+      const metadataHash = this.hashService.hashMetadata(extraction.metadata);
+
+      const afterDerivation = await this.repository.recordDerivationCompleted({
+        captureId: capture.id,
+        pageKind: extraction.pageKind,
+        extractionStatus: extraction.extractionStatus,
+        claimedPublishedAt: extraction.metadata.publishedAtClaimed,
+        canonicalContent: extraction.canonicalContent,
+        metadata: extraction.metadata,
+        canonicalContentHash,
+        metadataHash,
+        canonicalContentArtifact: {
+          kind: "canonical-content",
+          storageKey: canonicalContentStorageKey,
+          contentHash: canonicalContentHash,
+          contentType: "application/json; charset=utf-8",
+          byteSize: jsonByteSize(extraction.canonicalContent)
+        },
+        metadataArtifact: {
+          kind: "metadata",
+          storageKey: metadataStorageKey,
+          contentHash: metadataHash,
+          contentType: "application/json; charset=utf-8",
+          byteSize: jsonByteSize(extraction.metadata)
+        }
+      });
+      stage = "timestamping";
+
+      const attestationBundle = this.attestationService && imageInput?.attestations?.length
+        ? await this.attestationService.issueBundle({ subjectContentHash: rawSnapshotHash, attestations: imageInput.attestations })
+        : undefined;
+      const attestationBundleHash = attestationBundle ? await hashAttestationBundle(attestationBundle) : undefined;
+      const captureScope = buildCaptureScope(afterDerivation);
+      const hashes = this.hashService.buildProofBundle({
+        artifactType: "image-file",
+        captureId: capture.id,
+        sourceLabel: capture.sourceLabel ?? capture.fileName ?? capture.requestedUrl,
+        fileName: capture.fileName,
+        mediaType: capture.mediaType,
+        byteSize: capture.byteSize,
+        requestedUrl: capture.requestedUrl,
+        finalUrl: capture.requestedUrl,
+        pageKind: extraction.pageKind,
+        extractorVersion: extraction.canonicalContent.extractorVersion,
+        normalizationVersion: extraction.canonicalContent.normalizationVersion,
+        rawSnapshotSchemaVersion: 1,
+        canonicalContentSchemaVersion: extraction.canonicalContent.schemaVersion,
+        metadataSchemaVersion: extraction.metadata.schemaVersion,
+        captureScope,
+        rawSnapshotHash,
+        screenshotHash: undefined,
+        canonicalContentHash,
+        metadataHash,
+        attestationBundleHash,
+        createdAt: new Date().toISOString()
+      });
+
+      const issuedReceipt = await this.timestampProvider.issue(hashes.proofBundleHash);
+      const transparency = await this.transparencyLogService.appendCapture(capture.id, hashes.proofBundleHash, issuedReceipt);
+      const receipt = transparency.receipt ?? issuedReceipt;
+      const proofBundleStorageKey = artifactPath(capture.id, "proof-bundle.json");
+      await this.objectStore.putJson(proofBundleStorageKey, hashes.proofBundle);
+
+      let completedCapture = await this.repository.recordTimestampCompleted({
+        captureId: capture.id,
+        capturedAt: receipt.receivedAt,
+        proofBundle: hashes.proofBundle,
+        proofBundleHash: hashes.proofBundleHash,
+        receipt,
+        proofBundleArtifact: {
+          kind: "proof-bundle",
+          storageKey: proofBundleStorageKey,
+          contentHash: hashes.proofBundleHash,
+          contentType: "application/json; charset=utf-8",
+          byteSize: jsonByteSize(hashes.proofBundle)
+        }
+      });
+
+      if (attestationBundle) {
+        const attestationStorageKey = artifactPath(capture.id, "attestations.json");
+        await this.objectStore.putJson(attestationStorageKey, attestationBundle);
+        completedCapture = await this.repository.recordAttestationBundle({
+          captureId: capture.id,
+          attestationBundle,
+          artifact: {
+            kind: "attestation-bundle",
+            storageKey: attestationStorageKey,
+            contentHash: attestationBundleHash ?? hashStableValue(attestationBundle),
+            contentType: "application/json; charset=utf-8",
+            byteSize: jsonByteSize(attestationBundle)
+          }
+        });
+      }
+
+      return completedCapture;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown image capture failure";
+      const errorCode = error instanceof Error ? error.name : "ImageCaptureError";
+      return this.repository.recordFailure({
+        captureId: capture.id,
+        stageStatus: stage,
+        errorCode: `${stage}:${errorCode}`,
+        errorMessage: message
+      });
+    }
+  }
   private async processClaimedPdfCapture(capture: CaptureRecord): Promise<CaptureRecord> {
+    if (capture.artifactType === "article-publish") {
+      return this.processClaimedArticleCapture(capture);
+    }
     let stage: CaptureRecord["status"] = "fetching";
 
     try {
@@ -502,12 +899,13 @@ export class CaptureProcessor {
       return undefined;
     }
 
-    const [canonicalContent, metadata, proofBundle, receipt, approvalReceipt] = await Promise.all([
+    const [canonicalContent, metadata, proofBundle, receipt, approvalReceipt, attestationBundle] = await Promise.all([
       this.loadArtifactJson<CanonicalContent>(capture.artifacts.canonicalContentStorageKey),
       this.loadArtifactJson<CanonicalMetadata>(capture.artifacts.metadataStorageKey),
       this.loadArtifactJson<ProofBundle>(capture.artifacts.proofBundleStorageKey),
       capture.proofReceiptId ? this.repository.getReceipt(capture.proofReceiptId) : Promise.resolve(undefined),
-      capture.approvalReceiptId ? this.repository.getApprovalReceipt(capture.approvalReceiptId) : Promise.resolve(undefined)
+      capture.approvalReceiptId ? this.repository.getApprovalReceipt(capture.approvalReceiptId) : Promise.resolve(undefined),
+      this.loadArtifactJson<AttestationBundle>(capture.artifacts.attestationBundleStorageKey)
     ]);
 
     return {
@@ -516,7 +914,8 @@ export class CaptureProcessor {
       metadata,
       proofBundle,
       receipt,
-      approvalReceipt
+      approvalReceipt,
+      attestationBundle
     };
   }
 
@@ -629,5 +1028,28 @@ export class CaptureProcessor {
     });
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

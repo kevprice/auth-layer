@@ -8,6 +8,9 @@ export * from "./services/comparisonService.js";
 export * from "./services/extractionService.js";
 export * from "./services/fetchService.js";
 export * from "./services/hashService.js";
+export * from "./services/imageService.js";
+export * from "./services/articleService.js";
+export * from "./services/attestationService.js";
 export * from "./services/pdfApprovalService.js";
 export * from "./services/pdfService.js";
 export * from "./services/proofPackageService.js";
@@ -20,3 +23,6 @@ export * from "./storage/objectStore.js";
 export * from "./utils/stableJson.js";
 export * from "./utils/url.js";
 export * from "./worker/pollingWorker.js";
+
+
+

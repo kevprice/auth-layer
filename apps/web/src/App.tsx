@@ -16,13 +16,16 @@ import type {
   RenderedEvidence,
   Watchlist,
   WatchlistNotificationDelivery,
+  WatchlistResultPayload,
   WatchlistRun
 } from "@auth-layer/shared";
 
-import { artifactUrl, createCapture, createPdfCapture, createWatchlist, getCapture, getCaptureComparison, getCaptureHistory, getOperatorPublicKey, getWatchlistRuns, listWatchlists, retryWatchlist, testWatchlistWebhook, updateWatchlist } from "./api";
+import { artifactUrl, createCapture, createImageCapture, createPdfCapture, createWatchlist, getCapture, getCaptureComparison, getCaptureHistory, getOperatorPublicKey, getWatchlistRuns, listWatchlists, retryWatchlist, testWatchlistWebhook, updateWatchlist } from "./api";
+import { VerifierView } from "./VerifierView";
 
 type Route =
   | { kind: "home" }
+  | { kind: "verify" }
   | { kind: "capture"; id: string }
   | { kind: "history"; url: string }
   | { kind: "compare"; url: string; fromCaptureId: string; toCaptureId: string }
@@ -94,6 +97,10 @@ type ComparisonReport = {
 const parseRoute = (hash: string): Route => {
   const cleanedHash = hash.replace(/^#/, "");
   const parts = cleanedHash.split("/").filter(Boolean);
+
+  if (parts[0] === "verify") {
+    return { kind: "verify" };
+  }
 
   if (parts[0] === "captures" && parts[1]) {
     return { kind: "capture", id: parts[1] };
@@ -224,6 +231,10 @@ const hasLowQualityPdfText = (canonicalContent?: CaptureDetail["canonicalContent
 const canonicalSummaryText = (capture: CaptureRecord, canonicalContent?: CaptureDetail["canonicalContent"], diagnostics?: PdfQualityDiagnostics): string => {
   if (!canonicalContent) {
     return "Canonical content is not available yet.";
+  }
+
+  if (capture.artifactType === "image-file") {
+    return canonicalContent.imageObject?.caption ?? canonicalContent.imageObject?.altText ?? "This image capture preserves exact file integrity and any packaged image metadata.";
   }
 
   if (capture.artifactType === "pdf-file" && hasLowQualityPdfText(canonicalContent, diagnostics)) {
@@ -491,6 +502,29 @@ const watchlistEventLabel = (eventType?: WatchlistNotificationDelivery["payload"
         : eventType === "watchlist.run.completed"
           ? "Run completed event"
           : "Watchlist event";
+
+const watchlistOutcomeLabel = (outcome?: WatchlistRun["outcome"] | WatchlistResultPayload["outcome"]): string =>
+  outcome === "ok_changed"
+    ? "Content changed"
+    : outcome === "ok_unchanged"
+      ? "Content unchanged"
+      : outcome === "redirected"
+        ? "Redirect observed"
+        : outcome === "not_found"
+          ? "404 not found"
+          : outcome === "gone"
+            ? "410 gone"
+            : outcome === "blocked"
+              ? "Blocked"
+              : outcome === "server_error"
+                ? "Server error"
+                : outcome === "network_error"
+                  ? "Network error"
+                  : outcome === "timeout"
+                    ? "Timed out"
+                    : outcome === "content_type_changed"
+                      ? "Content type changed"
+                      : "Outcome pending";
 
 const formatBlockPreview = (blocks: CanonicalBlock[] | undefined): string => {
   if (!blocks || blocks.length === 0) {
@@ -877,8 +911,10 @@ const useRoute = (): [Route, (route: Route) => void] => {
     const nextHash =
       nextRoute.kind === "home"
         ? "#/"
-        : nextRoute.kind === "capture"
-          ? `#/captures/${nextRoute.id}`
+        : nextRoute.kind === "verify"
+          ? "#/verify"
+          : nextRoute.kind === "capture"
+            ? `#/captures/${nextRoute.id}`
           : nextRoute.kind === "history"
             ? `#/history/${encodeURIComponent(nextRoute.url)}`
             : nextRoute.kind === "watchlists"
@@ -1114,9 +1150,19 @@ const HomeView = ({ onCreated, navigate }: { onCreated: (capture: CaptureRecord)
   const [url, setUrl] = useState("");
   const [watchUrl, setWatchUrl] = useState("");
   const [watchIntervalMinutes, setWatchIntervalMinutes] = useState("60");
+  const [watchExpiresAt, setWatchExpiresAt] = useState("");
+  const [watchBurstEnabled, setWatchBurstEnabled] = useState(false);
   const [watchWebhookUrl, setWatchWebhookUrl] = useState("");
   const [watchEmitJson, setWatchEmitJson] = useState(true);
   const [selectedPdf, setSelectedPdf] = useState<File | undefined>();
+  const [selectedImage, setSelectedImage] = useState<File | undefined>();
+  const [imageCaption, setImageCaption] = useState("");
+  const [imageAltText, setImageAltText] = useState("");
+  const [imagePublishedAt, setImagePublishedAt] = useState("");
+  const [imageDerivativeHash, setImageDerivativeHash] = useState("");
+  const [imageAttestUpload, setImageAttestUpload] = useState(false);
+  const [imageActorId, setImageActorId] = useState("");
+  const [imageActorName, setImageActorName] = useState("");
   const [pdfApproveUpload, setPdfApproveUpload] = useState(false);
   const [pdfActorAccountId, setPdfActorAccountId] = useState("");
   const [pdfApprovalType, setPdfApprovalType] = useState("pdf-upload-approval-v1");
@@ -1159,6 +1205,49 @@ const HomeView = ({ onCreated, navigate }: { onCreated: (capture: CaptureRecord)
     setSelectedPdf(file ?? undefined);
   };
 
+  const handleImageSelection = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    setSelectedImage(file ?? undefined);
+  };
+
+
+  const handleImageSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedImage) {
+      return;
+    }
+
+    try {
+      const capture = await createImageCapture({
+        file: selectedImage,
+        caption: imageCaption.trim() || undefined,
+        altText: imageAltText.trim() || undefined,
+        publishedAt: imagePublishedAt.trim() || undefined,
+        derivativeOfContentHash: imageDerivativeHash.trim() || undefined,
+        attestations:
+          imageAttestUpload && imageActorId.trim()
+            ? [
+                {
+                  type: "upload",
+                  actor: {
+                    id: imageActorId.trim(),
+                    displayName: imageActorName.trim() || undefined,
+                    role: "uploader"
+                  },
+                  auth: {
+                    method: "session",
+                    level: "standard"
+                  },
+                  notes: "Uploader identity claim recorded as attested metadata."
+                }
+              ]
+            : undefined
+      });
+      onCreated(capture);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to upload image");
+    }
+  };
   const handlePdfSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (!selectedPdf) {
@@ -1194,6 +1283,9 @@ const HomeView = ({ onCreated, navigate }: { onCreated: (capture: CaptureRecord)
           and lets third parties verify the package offline with a trusted operator key.
         </p>
         <div className="detail-header">
+          <button className="ghost-button" onClick={() => navigate({ kind: "verify" })}>
+            Verify a proof package
+          </button>
           <button className="ghost-button" onClick={() => navigate({ kind: "watchlists" })}>
             View watchlists
           </button>
@@ -1233,6 +1325,44 @@ const HomeView = ({ onCreated, navigate }: { onCreated: (capture: CaptureRecord)
             </div>
           ) : null}
         </form>
+        <form className="capture-form" onSubmit={handleImageSubmit}>
+          <label htmlFor="capture-image">Upload an image file to package exact file integrity and optional identity claims</label>
+          <div className="capture-form__row">
+            <input id="capture-image" name="capture-image" type="file" accept="image/*" onChange={handleImageSelection} />
+            <button type="submit" disabled={!selectedImage || (imageAttestUpload && !imageActorId.trim())}>Create image proof</button>
+          </div>
+          <div className="field-grid">
+            <div className="field-grid__row">
+              <span>Caption (optional)</span>
+              <input value={imageCaption} onChange={(event) => setImageCaption(event.target.value)} placeholder="Image caption" />
+            </div>
+            <div className="field-grid__row">
+              <span>Alt text (optional)</span>
+              <input value={imageAltText} onChange={(event) => setImageAltText(event.target.value)} placeholder="Alt text" />
+            </div>
+            <div className="field-grid__row">
+              <span>Published at (optional)</span>
+              <input value={imagePublishedAt} onChange={(event) => setImagePublishedAt(event.target.value)} placeholder="2026-03-20T10:30:00Z" />
+            </div>
+            <div className="field-grid__row">
+              <span>Derivative of content hash (optional)</span>
+              <input value={imageDerivativeHash} onChange={(event) => setImageDerivativeHash(event.target.value)} placeholder="sha256:..." />
+            </div>
+          </div>
+          <label className="hero-copy"><input type="checkbox" checked={imageAttestUpload} onChange={(event) => setImageAttestUpload(event.target.checked)} /> Add uploader attestation metadata to the proof package</label>
+          {imageAttestUpload ? (
+            <div className="field-grid">
+              <div className="field-grid__row">
+                <span>Actor ID</span>
+                <input value={imageActorId} onChange={(event) => setImageActorId(event.target.value)} placeholder="photographer@example.com" />
+              </div>
+              <div className="field-grid__row">
+                <span>Display name</span>
+                <input value={imageActorName} onChange={(event) => setImageActorName(event.target.value)} placeholder="Photo desk" />
+              </div>
+            </div>
+          ) : null}
+        </form>
       </section>
       <section className="promise-card">
         <h2>What this proves</h2>
@@ -1263,10 +1393,14 @@ const HomeView = ({ onCreated, navigate }: { onCreated: (capture: CaptureRecord)
       </section>
 
       <section className="panel">
-        <div className="panel__header"><h2>Verify offline</h2></div>
+      <section className="panel">
+        <div className="panel__header"><h2>Verify a proof package</h2></div>
+        <p className="hero-copy">Verification runs on exported artifacts. User-supplied checkpoint and operator key files provide stronger independent trust than package-provided materials.</p>
+        <div className="detail-header">
+          <button className="ghost-button" onClick={() => navigate({ kind: "verify" })}>Open browser verifier</button>
+        </div>
         <pre>{`npm run proof:verify -- <package-directory> --checkpoint <checkpoint.json> --operator-key <operator-public-key.json>`}</pre>
       </section>
-      <section className="panel">
         <div className="panel__header"><h2>Transparency checkpoints</h2></div>
         <pre>{`URL capture or PDF upload -> hashes -> proof package -> transparency log entry -> Merkle checkpoint -> operator signature -> offline verifier`}</pre>
       </section>
@@ -1456,7 +1590,18 @@ const CaptureDetailView = ({
         </div>
       </Section>
 
-      {capture.artifactType !== "pdf-file" ? (
+      {capture.artifactType === "image-file" ? (
+        <Section title="Image Preview">
+          <p className="notice">This preview is for human inspection. The trust anchor remains the preserved source image hash in the proof package.</p>
+          {capture.artifacts.rawImageStorageKey ? (
+            <div className="evidence-preview">
+              <img className="evidence-preview__image" src={artifactUrl(capture.id, "raw-image")} alt={capture.sourceLabel ?? "Captured image"} />
+            </div>
+          ) : (
+            <p className="notice">No source image artifact is available to preview.</p>
+          )}
+        </Section>
+      ) : capture.artifactType !== "pdf-file" ? (
         <Section title="Rendered Evidence">
           <div className="field-grid">
             <div className="field-grid__row">
@@ -1734,7 +1879,7 @@ const CaptureDetailView = ({
       </Section>
 
       <Section title="Artifacts">
-        {capture.artifactType === "pdf-file" ? <p className="notice"><strong>Primary artifact</strong>: Source PDF. <strong>Derived artifacts</strong>: canonical JSON, metadata JSON, proof bundle JSON, and approval receipt JSON when present.</p> : null}
+        {capture.artifactType === "pdf-file" ? <p className="notice"><strong>Primary artifact</strong>: Source PDF. <strong>Derived artifacts</strong>: canonical JSON, metadata JSON, proof bundle JSON, and approval receipt JSON when present.</p> : capture.artifactType === "image-file" ? <p className="notice"><strong>Primary artifact</strong>: Source image file. <strong>Derived artifacts</strong>: canonical JSON, metadata JSON, proof bundle JSON, and attestations JSON when present.</p> : null}
         <div className="artifact-links">
           {capture.artifacts.rawHtmlStorageKey ? (
             <a href={artifactUrl(capture.id, "raw-html")} target="_blank" rel="noreferrer">
@@ -1947,7 +2092,15 @@ const WatchlistsView = ({ navigate }: { navigate: (route: Route) => void }) => {
             <div className="history-row__badges">
               <span className={`change-badge ${watchlist.latestRunVerdict === "changed" || watchlist.latestRunVerdict === "failed" ? "change-badge--changed" : ""}`}>{watchlistVerdictLabel(watchlist.latestRunVerdict)}</span>
               <span className="change-badge">Every {watchlist.intervalMinutes} minutes</span>
+              {watchlist.latestRun?.outcome ? <span className="change-badge">{watchlistOutcomeLabel(watchlist.latestRun.outcome)}</span> : null}
               <span className="change-badge">Next run {formatTimestamp(watchlist.nextScheduledRunAt ?? watchlist.nextRunAt)}</span>
+              {watchlist.expiresAt ? <span className="change-badge">Expires {formatTimestamp(watchlist.expiresAt)}</span> : null}
+              {watchlist.burstConfig?.enabled ? <span className="change-badge">Burst mode enabled</span> : null}
+              {watchlist.lastCheckedAt ? <span className="change-badge">Last checked {formatTimestamp(watchlist.lastCheckedAt)}</span> : null}
+              {watchlist.lastSuccessfulFetchAt ? <span className="change-badge">Last successful fetch {formatTimestamp(watchlist.lastSuccessfulFetchAt)}</span> : null}
+              {watchlist.lastResolvedUrl ? <span className="change-badge">Resolved URL {watchlist.lastResolvedUrl}</span> : null}
+              {watchlist.lastHttpStatus ? <span className="change-badge">HTTP {watchlist.lastHttpStatus}</span> : null}
+              <span className="change-badge">Failures {watchlist.failureCount}</span>
               {watchlist.lastCaptureAt ? <span className="change-badge">Last capture {formatTimestamp(watchlist.lastCaptureAt)}</span> : null}
               {watchlist.lastChangeDetectedAt ? <span className="change-badge">Last change {formatTimestamp(watchlist.lastChangeDetectedAt)}</span> : null}
               {watchlist.latestCaptureHealth ? <span className={`change-badge ${watchlist.latestCaptureHealth !== "success" ? "change-badge--changed" : ""}`}>{watchlistHealthLabel(watchlist.latestCaptureHealth)}</span> : null}
@@ -2002,7 +2155,8 @@ const WatchlistRunsView = ({ watchlistId, navigate }: { watchlistId: string; nav
               </div>
             </div>
             <div className="history-row__badges">
-              <span className={`change-badge ${run.status === "failed" || run.changeDetected ? "change-badge--changed" : ""}`}>{run.status === "failed" ? "Failed" : run.previousCaptureId ? (run.changeDetected ? "Change detected" : "No change detected") : "Baseline"}</span>
+              <span className={`change-badge ${run.status === "failed" || run.changeDetected || run.stateChanged ? "change-badge--changed" : ""}`}>{run.status === "failed" ? "Failed" : run.previousCaptureId || run.stateChanged ? (run.changeDetected || run.stateChanged ? "Change detected" : "No change detected") : "Baseline"}</span>
+              {run.outcome ? <span className="change-badge">{watchlistOutcomeLabel(run.outcome)}</span> : null}
               {run.captureHealth ? <span className={`change-badge ${run.captureHealth !== "success" ? "change-badge--changed" : ""}`}>{watchlistHealthLabel(run.captureHealth)}</span> : null}
               {run.extractionDriftDetected ? <span className="change-badge change-badge--changed">Extraction drift note</span> : null}
               {run.deliveries?.[0]?.payload?.eventType ? <span className="change-badge">{watchlistEventLabel(run.deliveries[0].payload.eventType)}</span> : null}
@@ -2019,6 +2173,22 @@ const WatchlistRunsView = ({ watchlistId, navigate }: { watchlistId: string; nav
             <details className="details-card">
               <summary>Run details</summary>
               <div className="field-grid">
+                <div className="field-grid__row">
+                  <span>Outcome</span>
+                  <strong>{watchlistOutcomeLabel(run.outcome)}</strong>
+                </div>
+                <div className="field-grid__row">
+                  <span>HTTP status</span>
+                  <strong>{run.httpStatus ?? "Not available"}</strong>
+                </div>
+                <div className="field-grid__row">
+                  <span>Resolved URL</span>
+                  <strong>{run.resolvedUrl ?? "Not available"}</strong>
+                </div>
+                <div className="field-grid__row">
+                  <span>State transition</span>
+                  <strong>{run.availabilityTransition ?? (run.redirectChanged ? "redirect_changed" : run.stateChanged ? "state_changed" : "No state transition")}</strong>
+                </div>
                 <div className="field-grid__row">
                   <span>Compare permalink</span>
                   <strong>{run.comparePath ?? "Not available"}</strong>
@@ -2638,6 +2808,10 @@ export const App = () => {
   const captureDetail = useCaptureDetail(route.kind === "capture" ? route.id : undefined);
   const comparisonState = useComparison(route.kind === "compare" ? route : undefined);
   const page = useMemo(() => {
+    if (route.kind === "verify") {
+      return <VerifierView goHome={() => navigate({ kind: "home" })} />;
+    }
+
     if (route.kind === "capture") {
       return (
         <CaptureDetailView
@@ -2688,6 +2862,12 @@ export const App = () => {
 
   return <div className="app-shell">{page}</div>;
 };
+
+
+
+
+
+
 
 
 

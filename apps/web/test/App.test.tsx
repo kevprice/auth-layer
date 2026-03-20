@@ -375,3 +375,15 @@ describe("App", () => {
 
 
 
+
+describe("App verifier route", () => {
+  it("renders the public verifier route", async () => {
+    window.location.hash = "#/verify";
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /Verify a proof package without trusting the server UI/i })).toBeInTheDocument();
+    expect(screen.getByText(/Browser verifier limits/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Verify package/i })).toBeInTheDocument();
+  });
+});

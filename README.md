@@ -30,6 +30,7 @@ This repo aims to be a reference implementation of a portable proof format, not 
 - signed transparency checkpoints
 - trusted operator public keys
 - offline verification of checkpoint signatures and Merkle inclusion proofs
+- optional lineage metadata that can be attested and verified without being confused for semantic proof
 
 ## Evidence layers
 
@@ -38,6 +39,7 @@ Each capture can preserve several evidence layers. They are related, but they ar
 - `Canonical content`: proves the deterministic semantic extraction used for comparison. It is hashed separately so cosmetic HTML churn does not automatically count as a content change. It does not prove publisher intent or truth.
 - `Metadata`: proves the normalized citation-like fields extracted from the artifact, such as title, author, and claimed published date. It does not independently validate those claims.
 - `Rendered evidence`: proves what the operator-rendered page looked like under the recorded viewport and device settings when a screenshot was captured. It supports human inspection, not semantic equality, and screenshot equality across captures is neither expected nor required.
+- `Lineage metadata`: optionally describes how one content object derives from another across quotes, excerpts, claims, summaries, or headlines. It can be cryptographically packaged and graph-validated, but semantic equivalence is only exact-proven where deterministic text checks support it.
 
 ## Architecture
 
@@ -67,6 +69,12 @@ Verify a package offline with a trusted operator key and published checkpoint:
 npm run proof:verify -- <package-directory> --checkpoint <checkpoint.json> --operator-key <operator-public-key.json>
 ```
 
+Inspect packaged lineage metadata with the same trust boundary:
+
+```bash
+npm run proof:verify -- <package-directory> --checkpoint <checkpoint.json> --operator-key <operator-public-key.json> --inspect-lineage
+```
+
 The verifier recomputes hashes from exported artifacts. If `TIMESTAMP_SECRET` is available locally, it also verifies the internal timestamp receipt signature. Verification proceeds in this order:
 1. proof package integrity
 2. Merkle inclusion proof
@@ -92,6 +100,9 @@ The current transparency model uses signed Merkle checkpoints. Checkpoints attes
 The API exposes:
 - `POST /api/captures`
 - `POST /api/pdfs`
+- `POST /api/integrations/wordpress/articles`
+- `POST /api/integrations/wordpress/approvals/:id/complete`
+- `GET /api/discovery/articles/:encodedCanonicalUrl`
 - `GET /api/captures/:id/export`
 - `GET /api/transparency/log/captures/:id`
 - `GET /api/transparency/checkpoints/latest`
@@ -105,6 +116,15 @@ The API exposes:
 - `GET /api/watchlists/:id/runs`
 - `POST /api/watchlists/:id/test-webhook`
 
+## Smart watchlists
+
+Watchlists now keep per-watch cadence and richer fetch-state evidence without changing the underlying capture/proof model. Each watch can set:
+- a custom polling interval via `intervalSeconds` (legacy `intervalMinutes` still works)
+- an optional `expiresAt` time after which the watch becomes `expired`
+- optional burst mode with a default of every 5 minutes for the first 2 hours
+
+Watch runs now distinguish outcomes such as `ok_changed`, `ok_unchanged`, `redirected`, `not_found`, `gone`, `blocked`, `server_error`, `network_error`, `timeout`, and `content_type_changed`. Disappearance and redirect are treated as first-class observed events rather than generic failures.
+
 ## Comparison UX
 
 The UI and API can compare two observed captures of the same normalized URL by capture ID or capture timestamp. Comparisons report:
@@ -116,6 +136,12 @@ The UI and API can compare two observed captures of the same normalized URL by c
 - extraction diagnostics and drift notes
 
 These comparisons describe differences between two observed captures. They do not claim original publisher intent or creation time.
+
+## Quote lineage
+
+Quote lineage is an optional provenance layer packaged alongside the existing capture artifacts. It supports content objects such as transcript segments, quotes, excerpts, headlines, summaries, claims, and translations, connected by DAG edges like `verbatim`, `trimmed`, `headline`, `summary`, and `paraphrased`.
+
+The important boundary is unchanged: cryptographic verification proves that packaged lineage metadata has not been altered, but it does not automatically prove semantic identity. The browser verifier now surfaces a `Quote Lineage` section when `lineage.json` is present, and the CLI can print lineage summaries and warnings with `--inspect-lineage`.
 
 ## Example artifacts
 
@@ -140,6 +166,7 @@ Protocol and trust docs:
 - `docs/threat-model.md`
 - `docs/verification-guarantees.md`
 - `docs/multi-operator-roadmap.md`
+- `docs/quote-lineage.md`
 
 ## Watchlists
 
@@ -154,3 +181,13 @@ The MVP also supports standalone PDF file proof generation. Uploaded PDF files a
 ## Operator quickstart
 
 See `docs/operator-quickstart.md` for a minimal self-hosted operator setup and offline verification flow.
+
+
+
+
+
+## WordPress publishing integration
+
+WordPress can now publish directly into the same proof-package and transparency model without treating author identity as a trust root. The new `article-publish` artifact path derives deterministic canonical article content from a WordPress post payload, optionally records `publish`, `update`, and `approval` attestations, and exposes a discovery manifest for the canonical article URL.
+
+The reference plugin lives in [`integrations/wordpress/auth-layer-authenticity.php`](integrations/wordpress/auth-layer-authenticity.php), and setup notes are in [`docs/wordpress-integration.md`](docs/wordpress-integration.md).

@@ -5,6 +5,7 @@ import type {
   ArtifactReference,
   CaptureLifecycleEvent,
   CaptureRecord,
+  CreateWatchlistRequest,
   TransparencyCheckpoint,
   TransparencyLogEntry,
   TransparencyReceipt
@@ -39,12 +40,18 @@ const appendArtifactKey = (
       return { ...artifacts, rawHtmlStorageKey: storageKey };
     case "raw-pdf":
       return { ...artifacts, rawPdfStorageKey: storageKey };
+    case "raw-image":
+      return { ...artifacts, rawImageStorageKey: storageKey };
     case "canonical-content":
       return { ...artifacts, canonicalContentStorageKey: storageKey };
     case "metadata":
       return { ...artifacts, metadataStorageKey: storageKey };
     case "proof-bundle":
       return { ...artifacts, proofBundleStorageKey: storageKey };
+    case "approval-receipt":
+      return { ...artifacts, approvalReceiptStorageKey: storageKey };
+    case "attestation-bundle":
+      return { ...artifacts, attestationBundleStorageKey: storageKey };
     default:
       return artifacts;
   }
@@ -584,11 +591,19 @@ export class FileSystemCaptureRepository implements CaptureRepository {
     return this.readJsonFile<TransparencyCheckpoint | undefined>(this.latestCheckpointPath(), undefined);
   }
 
+  async createArticleCapture(_input: import("./captureRepository.js").CreateArticleCaptureInput): Promise<CaptureRecord> {
+    throw new Error("FileSystemCaptureRepository does not support article publish captures");
+  }
+
+  async createImageCapture(_input: import("./captureRepository.js").CreateImageCaptureInput): Promise<CaptureRecord> {
+    throw new Error("FileSystemCaptureRepository does not support image captures");
+  }
+
   async createPdfCapture(_input: CreatePdfCaptureInput): Promise<CaptureRecord> {
     throw new Error("FileSystemCaptureRepository does not support PDF captures");
   }
 
-  async createWatchlist(_input: { url: string; intervalMinutes: number; webhookUrl?: string; emitJson?: boolean }): Promise<never> {
+  async createWatchlist(_input: CreateWatchlistRequest): Promise<never> {
     throw new Error("FileSystemCaptureRepository does not support watchlists");
   }
 
@@ -632,6 +647,10 @@ export class FileSystemCaptureRepository implements CaptureRepository {
     return [];
   }
 
+  async recordAttestationBundle(): Promise<never> {
+    throw new Error("FileSystemCaptureRepository does not support attestation bundles");
+  }
+
   async recordApprovalReceipt(): Promise<never> {
     throw new Error("FileSystemCaptureRepository does not support approval receipts");
   }
@@ -640,3 +659,6 @@ export class FileSystemCaptureRepository implements CaptureRepository {
     return undefined;
   }
 }
+
+
+

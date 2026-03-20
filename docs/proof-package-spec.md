@@ -18,6 +18,7 @@ Optional files, depending on what the capture produced:
 - `canonical-content.json`
 - `metadata.json`
 - `diagnostics.json`
+- `lineage.json`
 - `proof-bundle.json`
 - `receipt.json`
 - `transparency-log-entry.json`
@@ -37,6 +38,7 @@ Optional files, depending on what the capture produced:
 - `canonicalContentHash`
 - `metadataHash`
 - `proofBundleHash`
+- optional `lineageBundleHash`
 - `hashAlgorithm`
 - `extractorVersion`
 - `normalizationVersion`
@@ -56,6 +58,23 @@ Proof packages may describe several evidence layers:
 
 Rendered evidence improves human inspection, but it is not canonical content and verifiers should not treat screenshot equality as a semantic equality check. Diagnostics may also include evidence-layer summaries and conservative PDF quality signals so exported packages remain legible without changing the attested proof-bundle schema.
 
+## Lineage metadata
+
+Packages may optionally include `lineage.json`, which contains a lineage bundle of generic content objects and derivation edges. This is intended for quotes, excerpts, claims, headlines, summaries, and translations, not only journalist quotations.
+
+Lineage objects are hashed deterministically with stable key ordering, preserved array order, and exact text bytes as stored. `text`, `contextBefore`, and `contextAfter` are never whitespace-normalized during lineage hashing. Undefined fields are omitted consistently.
+
+V1 derivation types are:
+- `verbatim`
+- `trimmed`
+- `paraphrased`
+- `headline`
+- `summary`
+- `excerpt`
+- `translation`
+
+Lineage graphs must remain DAGs. Duplicate node ids, missing edge references, invalid derivation types, and cycles are verifier errors. Multiple roots, disconnected components, multiple parents, and semantic-only derivations are warnings. A verifier may also warn when a `verbatim` child does not exactly match its parent text or when a `trimmed` or `excerpt` child is not an exact substring of the parent text.
+
 ## Verification rules
 
 A verifier should:
@@ -68,8 +87,9 @@ A verifier should:
 7. recompute the transparency log entry hash, if present
 8. verify the inclusion proof against the checkpoint Merkle root when `logMode` is `merkle-tree-v1`
 9. verify the signed transparency checkpoint against a trusted operator public key
-10. optionally verify the PDF approval receipt when present
-11. fall back to legacy exact-entry validation only for `legacy-hash-chain` checkpoints
+10. if `lineage.json` is present, recompute `lineageBundleHash`, validate the lineage graph, and surface lineage warnings
+11. optionally verify the PDF approval receipt when present
+12. fall back to legacy exact-entry validation only for `legacy-hash-chain` checkpoints
 
 ## Merkle portability
 
@@ -95,7 +115,7 @@ Verify a package against a published checkpoint and trusted operator key:
 npm run proof:verify -- <package-directory> --checkpoint <checkpoint.json> --operator-key <operator-public-key.json>
 ```
 
-Multiple `--operator-key` flags may be supplied so verifiers can maintain a small trust store.
+Multiple `--operator-key` flags may be supplied so verifiers can maintain a small trust store. Add `--inspect-lineage` to include lineage nodes, edges, and warnings in CLI JSON output.
 
 ## Backward compatibility
 
@@ -104,3 +124,7 @@ Existing captures without screenshots or richer render metadata remain valid. Ex
 ## Trust note
 
 The packaged `operator-public-key.json` is informational. Verifiers should trust keys they obtained through an out-of-band trust decision, not just because a package included them.
+
+
+
+

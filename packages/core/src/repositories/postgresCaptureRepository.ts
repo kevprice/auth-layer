@@ -4,6 +4,8 @@ import type {
   ArtifactReference,
   CaptureLifecycleEvent,
   CaptureRecord,
+  CreateWatchlistRequest,
+  AttestationBundle,
   PdfApprovalReceipt,
   TransparencyCheckpoint,
   TransparencyLogEntry,
@@ -40,6 +42,47 @@ const toIsoString = (value: Date | string | null | undefined): string | undefine
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 };
 
+const DEFAULT_WATCHLIST_INTERVAL_SECONDS = 3600;
+const DEFAULT_BURST_INTERVAL_SECONDS = 300;
+const DEFAULT_BURST_DURATION_SECONDS = 7200;
+const WATCHLIST_SELECT_COLUMNS = "id, requested_url, normalized_requested_url, interval_minutes, interval_seconds, status, webhook_url, emit_json, expires_at, burst_config, last_run_at, last_checked_at, last_successful_fetch_at, last_state_change_at, last_http_status, last_resolved_url, failure_count, last_error_code, next_run_at, latest_run_id, created_at, updated_at";
+const WATCHLIST_RUN_SELECT_COLUMNS = "id, watchlist_id, capture_id, previous_capture_id, newer_capture_id, normalized_requested_url, status, outcome, http_status, resolved_url, previous_resolved_url, state_changed, availability_transition, redirect_changed, change_detected, change_summary, proof_bundle_hashes, checkpoint_ids, created_at, completed_at, error_message";
+
+const deriveWatchIntervalSeconds = (intervalSeconds?: number | null, intervalMinutes?: number | null): number => {
+  const seconds = typeof intervalSeconds === "number" && Number.isFinite(intervalSeconds)
+    ? intervalSeconds
+    : typeof intervalMinutes === "number" && Number.isFinite(intervalMinutes)
+      ? intervalMinutes * 60
+      : DEFAULT_WATCHLIST_INTERVAL_SECONDS;
+  return Math.max(60, Math.floor(seconds));
+};
+
+const deriveWatchIntervalMinutes = (intervalSeconds: number): number => Math.max(1, Math.ceil(intervalSeconds / 60));
+
+const normalizeBurstConfig = (burstConfig?: Watchlist["burstConfig"] | null, createdAt?: Date | string): Watchlist["burstConfig"] | undefined => {
+  if (!burstConfig?.enabled) {
+    return undefined;
+  }
+  const createdAtDate = createdAt ? new Date(createdAt) : new Date();
+  const durationSeconds = Math.max(60, Math.floor(burstConfig.durationSeconds ?? DEFAULT_BURST_DURATION_SECONDS));
+  const intervalSeconds = Math.max(60, Math.floor(burstConfig.intervalSeconds ?? DEFAULT_BURST_INTERVAL_SECONDS));
+  const burstUntil = burstConfig.burstUntil ?? new Date(createdAtDate.getTime() + durationSeconds * 1000).toISOString();
+  return {
+    enabled: true,
+    intervalSeconds,
+    durationSeconds,
+    burstUntil
+  };
+};
+
+const getEffectiveWatchIntervalSeconds = (watchlist: Pick<Watchlist, "intervalSeconds" | "burstConfig" | "createdAt">, now: Date): number => {
+  const burstConfig = normalizeBurstConfig(watchlist.burstConfig, watchlist.createdAt);
+  if (burstConfig?.enabled && burstConfig.burstUntil && new Date(burstConfig.burstUntil).getTime() > now.getTime()) {
+    return burstConfig.intervalSeconds ?? DEFAULT_BURST_INTERVAL_SECONDS;
+  }
+  return watchlist.intervalSeconds;
+};
+
 const appendArtifactKey = (
   artifacts: CaptureRecord["artifacts"],
   kind: ArtifactReferenceInput["kind"],
@@ -50,6 +93,8 @@ const appendArtifactKey = (
       return { ...artifacts, rawHtmlStorageKey: storageKey };
     case "raw-pdf":
       return { ...artifacts, rawPdfStorageKey: storageKey };
+    case "raw-image":
+      return { ...artifacts, rawImageStorageKey: storageKey };
     case "canonical-content":
       return { ...artifacts, canonicalContentStorageKey: storageKey };
     case "metadata":
@@ -60,6 +105,8 @@ const appendArtifactKey = (
       return { ...artifacts, screenshotStorageKey: storageKey };
     case "approval-receipt":
       return { ...artifacts, approvalReceiptStorageKey: storageKey };
+    case "attestation-bundle":
+      return { ...artifacts, attestationBundleStorageKey: storageKey };
     default:
       return artifacts;
   }
@@ -160,10 +207,20 @@ type WatchlistRow = QueryResultRow & {
   requested_url: string;
   normalized_requested_url: string;
   interval_minutes: number;
+  interval_seconds: number | null;
   status: Watchlist["status"];
   webhook_url: string | null;
   emit_json: boolean;
+  expires_at: Date | null;
+  burst_config: Watchlist["burstConfig"] | null;
   last_run_at: Date | null;
+  last_checked_at: Date | null;
+  last_successful_fetch_at: Date | null;
+  last_state_change_at: Date | null;
+  last_http_status: number | null;
+  last_resolved_url: string | null;
+  failure_count: number | null;
+  last_error_code: string | null;
   next_run_at: Date;
   latest_run_id: string | null;
   created_at: Date;
@@ -178,6 +235,13 @@ type WatchlistRunRow = QueryResultRow & {
   newer_capture_id: string | null;
   normalized_requested_url: string;
   status: WatchlistRun["status"];
+  outcome: WatchlistRun["outcome"] | null;
+  http_status: number | null;
+  resolved_url: string | null;
+  previous_resolved_url: string | null;
+  state_changed: boolean | null;
+  availability_transition: WatchlistRun["availabilityTransition"] | null;
+  redirect_changed: boolean | null;
   change_detected: boolean | null;
   change_summary: string[] | null;
   proof_bundle_hashes: { older?: string; newer?: string } | null;
@@ -309,10 +373,20 @@ const mapWatchlistRow = (row: WatchlistRow): Watchlist => ({
   requestedUrl: row.requested_url,
   normalizedRequestedUrl: row.normalized_requested_url,
   intervalMinutes: row.interval_minutes,
+  intervalSeconds: row.interval_seconds ?? row.interval_minutes * 60,
   status: row.status,
   webhookUrl: row.webhook_url ?? undefined,
   emitJson: row.emit_json,
+  expiresAt: toIsoString(row.expires_at),
+  burstConfig: row.burst_config ?? undefined,
   lastRunAt: toIsoString(row.last_run_at),
+  lastCheckedAt: toIsoString(row.last_checked_at),
+  lastSuccessfulFetchAt: toIsoString(row.last_successful_fetch_at),
+  lastStateChangeAt: toIsoString(row.last_state_change_at),
+  lastHttpStatus: row.last_http_status ?? undefined,
+  lastResolvedUrl: row.last_resolved_url ?? undefined,
+  failureCount: row.failure_count ?? 0,
+  lastErrorCode: row.last_error_code ?? undefined,
   nextRunAt: toIsoString(row.next_run_at) ?? new Date(0).toISOString(),
   latestRunId: row.latest_run_id ?? undefined,
   createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
@@ -327,6 +401,13 @@ const mapWatchlistRunRow = (row: WatchlistRunRow): WatchlistRun => ({
   newerCaptureId: row.newer_capture_id ?? undefined,
   normalizedRequestedUrl: row.normalized_requested_url,
   status: row.status,
+  outcome: row.outcome ?? undefined,
+  httpStatus: row.http_status ?? undefined,
+  resolvedUrl: row.resolved_url ?? undefined,
+  previousResolvedUrl: row.previous_resolved_url ?? undefined,
+  stateChanged: row.state_changed ?? undefined,
+  availabilityTransition: row.availability_transition ?? undefined,
+  redirectChanged: row.redirect_changed ?? undefined,
   changeDetected: row.change_detected ?? undefined,
   changeSummary: row.change_summary ?? [],
   proofBundleHashes: row.proof_bundle_hashes ?? {},
@@ -470,6 +551,90 @@ export class PostgresCaptureRepository implements CaptureRepository {
     });
   }
 
+
+  async createArticleCapture(input: import("./captureRepository.js").CreateArticleCaptureInput): Promise<CaptureRecord> {
+    return this.inTransaction(async (client) => {
+      const timestamp = new Date();
+      const captureId = createId();
+      const artifacts = {
+        rawHtmlStorageKey: input.rawHtmlStorageKey,
+        articleInputStorageKey: input.articleInputStorageKey
+      };
+
+      await client.query(
+        `INSERT INTO captures (
+          id, artifact_type, source_label, file_name, media_type, byte_size, requested_url, normalized_requested_url, extractor_version, raw_snapshot_hash, latest_event_sequence,
+          status, artifacts, actor_account_id, approval_receipt_id, approval_type, approval_scope, approval_method, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20)`,
+        [captureId, "article-publish", input.sourceLabel, input.fileName ?? null, input.mediaType, input.byteSize, input.requestedUrl, input.normalizedRequestedUrl, input.extractorVersion, input.rawSnapshotHash, 1, "queued", asJson(artifacts), null, null, null, null, null, timestamp, timestamp]
+      );
+
+      await this.insertArtifactReference(client, captureId, {
+        kind: "raw-html",
+        storageKey: input.rawHtmlStorageKey,
+        contentHash: input.rawSnapshotHash,
+        contentType: input.mediaType,
+        byteSize: input.byteSize
+      }, timestamp);
+
+      await this.insertEvent(client, {
+        captureId,
+        sequence: 1,
+        eventType: "queued",
+        status: "queued",
+        eventData: {
+          artifactType: "article-publish",
+          extractorVersion: input.extractorVersion,
+          normalizedRequestedUrl: input.normalizedRequestedUrl,
+          requestedUrl: input.requestedUrl,
+          fileName: input.fileName ?? null,
+          mediaType: input.mediaType,
+          byteSize: input.byteSize,
+          sourceLabel: input.sourceLabel
+        },
+        createdAt: timestamp
+      });
+
+      return mapCaptureRow(await this.getCaptureRow(client, captureId));
+    });
+  }
+  async createImageCapture(input: import("./captureRepository.js").CreateImageCaptureInput): Promise<CaptureRecord> {
+    return this.inTransaction(async (client) => {
+      const timestamp = new Date();
+      const captureId = createId();
+      const artifacts = {
+        rawImageStorageKey: input.rawImageStorageKey,
+        imageInputStorageKey: input.imageInputStorageKey
+      };
+
+      await client.query(
+        `INSERT INTO captures (
+          id, artifact_type, source_label, file_name, media_type, byte_size, requested_url, normalized_requested_url, extractor_version, raw_snapshot_hash, latest_event_sequence,
+          status, artifacts, actor_account_id, approval_receipt_id, approval_type, approval_scope, approval_method, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20)`,
+        [captureId, "image-file", input.sourceLabel, input.fileName, input.mediaType, input.byteSize, input.requestedUrl, input.normalizedRequestedUrl, input.extractorVersion, input.rawSnapshotHash, 1, "queued", asJson(artifacts), null, null, null, null, null, timestamp, timestamp]
+      );
+
+      await this.insertEvent(client, {
+        captureId,
+        sequence: 1,
+        eventType: "queued",
+        status: "queued",
+        eventData: {
+          artifactType: "image-file",
+          extractorVersion: input.extractorVersion,
+          normalizedRequestedUrl: input.normalizedRequestedUrl,
+          requestedUrl: input.requestedUrl,
+          fileName: input.fileName,
+          mediaType: input.mediaType,
+          byteSize: input.byteSize
+        },
+        createdAt: timestamp
+      });
+
+      return mapCaptureRow(await this.getCaptureRow(client, captureId));
+    });
+  }
   async createPdfCapture(input: CreatePdfCaptureInput): Promise<CaptureRecord> {
     return this.inTransaction(async (client) => {
       const timestamp = new Date();
@@ -924,6 +1089,38 @@ export class PostgresCaptureRepository implements CaptureRepository {
     });
   }
 
+  async recordAttestationBundle(input: import("./captureRepository.js").AttestationBundleInput): Promise<CaptureRecord> {
+    return this.inTransaction(async (client) => {
+      const current = await this.getCaptureRow(client, input.captureId);
+      const timestamp = new Date();
+      const nextSequence = current.latest_event_sequence + 1;
+      const artifacts = appendArtifactKey(current.artifacts ?? {}, input.artifact.kind, input.artifact.storageKey);
+
+      await this.insertArtifactReference(client, input.captureId, input.artifact, timestamp);
+      await this.insertEvent(client, {
+        captureId: input.captureId,
+        sequence: nextSequence,
+        eventType: "approval_completed",
+        status: "completed",
+        eventData: {
+          attestationCount: input.attestationBundle.attestations.length,
+          attestationTypes: input.attestationBundle.attestations.map((attestation) => attestation.type)
+        },
+        createdAt: timestamp
+      });
+
+      await client.query(
+        `UPDATE captures SET
+          latest_event_sequence = $2,
+          artifacts = $3::jsonb,
+          updated_at = $4
+        WHERE id = $1`,
+        [input.captureId, nextSequence, asJson(artifacts), timestamp]
+      );
+
+      return mapCaptureRow(await this.getCaptureRow(client, input.captureId));
+    });
+  }
   async recordApprovalReceipt(input: import("./captureRepository.js").ApprovalReceiptInput): Promise<CaptureRecord> {
     return this.inTransaction(async (client) => {
       const current = await this.getCaptureRow(client, input.captureId);
@@ -1188,16 +1385,33 @@ export class PostgresCaptureRepository implements CaptureRepository {
   }
 
 
-  async createWatchlist(input: { url: string; intervalMinutes: number; webhookUrl?: string; emitJson?: boolean }): Promise<Watchlist> {
+  async createWatchlist(input: CreateWatchlistRequest): Promise<Watchlist> {
     const now = new Date();
-    const nextRunAt = new Date(now.getTime() + input.intervalMinutes * 60_000);
+    const intervalSeconds = deriveWatchIntervalSeconds(input.intervalSeconds, input.intervalMinutes);
+    const intervalMinutes = deriveWatchIntervalMinutes(intervalSeconds);
+    const burstConfig = normalizeBurstConfig(input.burstConfig, now);
+    const nextRunAt = new Date(now.getTime() + getEffectiveWatchIntervalSeconds({ intervalSeconds, burstConfig, createdAt: now.toISOString() }, now) * 1000);
     const id = createId();
     const result = await this.pool.query<WatchlistRow>(
-      `INSERT INTO watchlists (
-        id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, next_run_at, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, last_run_at, next_run_at, latest_run_id, created_at, updated_at`,
-      [id, input.url, input.url, input.intervalMinutes, "active", input.webhookUrl ?? null, input.emitJson ?? false, nextRunAt, now, now]
+            `INSERT INTO watchlists (
+        id, requested_url, normalized_requested_url, interval_minutes, interval_seconds, status, webhook_url, emit_json, expires_at, burst_config, next_run_at, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13)
+      RETURNING ${WATCHLIST_SELECT_COLUMNS}`,
+      [
+        id,
+        input.url,
+        input.url,
+        intervalMinutes,
+        intervalSeconds,
+        "active",
+        input.webhookUrl ?? null,
+        input.emitJson ?? false,
+        input.expiresAt ? new Date(input.expiresAt) : null,
+        burstConfig ? asJson(burstConfig) : null,
+        nextRunAt,
+        now,
+        now
+      ]
     );
     const row = result.rows[0];
     if (!row) { throw new Error("Failed to create watchlist"); }
@@ -1206,7 +1420,7 @@ export class PostgresCaptureRepository implements CaptureRepository {
 
   async listWatchlists(): Promise<Watchlist[]> {
     const result = await this.pool.query<WatchlistRow>(
-      `SELECT id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, last_run_at, next_run_at, latest_run_id, created_at, updated_at
+      `SELECT ${WATCHLIST_SELECT_COLUMNS}
        FROM watchlists
        ORDER BY created_at DESC`
     );
@@ -1215,7 +1429,7 @@ export class PostgresCaptureRepository implements CaptureRepository {
 
   async getWatchlist(id: string): Promise<Watchlist | undefined> {
     const result = await this.pool.query<WatchlistRow>(
-      `SELECT id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, last_run_at, next_run_at, latest_run_id, created_at, updated_at
+      `SELECT ${WATCHLIST_SELECT_COLUMNS}
        FROM watchlists WHERE id = $1`,
       [id]
     );
@@ -1228,44 +1442,58 @@ export class PostgresCaptureRepository implements CaptureRepository {
       return undefined;
     }
     const now = new Date();
-    const intervalMinutes = input.intervalMinutes ?? current.intervalMinutes;
-    const status = input.status ?? current.status;
+    const intervalSeconds = deriveWatchIntervalSeconds(input.intervalSeconds ?? current.intervalSeconds, input.intervalMinutes ?? current.intervalMinutes);
+    const intervalMinutes = deriveWatchIntervalMinutes(intervalSeconds);
+    let status = input.status ?? current.status;
     const webhookUrl = input.webhookUrl === null ? null : (input.webhookUrl ?? current.webhookUrl ?? null);
     const emitJson = input.emitJson ?? current.emitJson;
-    const nextRunAt = status === "paused"
-      ? new Date(current.nextRunAt)
-      : new Date(now.getTime() + intervalMinutes * 60_000);
+    const expiresAtValue = input.expiresAt === null ? null : (input.expiresAt ?? current.expiresAt ?? null);
+    const burstConfigInput = input.burstConfig === null ? null : normalizeBurstConfig(input.burstConfig ?? current.burstConfig, current.createdAt);
+    if (status === "active" && expiresAtValue && new Date(expiresAtValue).getTime() <= now.getTime()) {
+      status = "expired";
+    }
+    const nextRunAt = status === "active"
+      ? new Date(now.getTime() + getEffectiveWatchIntervalSeconds({ intervalSeconds, burstConfig: burstConfigInput ?? undefined, createdAt: current.createdAt }, now) * 1000)
+      : new Date(current.nextRunAt);
 
     const result = await this.pool.query<WatchlistRow>(
-      `UPDATE watchlists SET interval_minutes = $2, status = $3, webhook_url = $4, emit_json = $5, next_run_at = $6, updated_at = $7
+      `UPDATE watchlists SET interval_minutes = $2, interval_seconds = $3, status = $4, webhook_url = $5, emit_json = $6, expires_at = $7, burst_config = $8::jsonb, next_run_at = $9, updated_at = $10
        WHERE id = $1
-       RETURNING id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, last_run_at, next_run_at, latest_run_id, created_at, updated_at`,
-      [id, intervalMinutes, status, webhookUrl, emitJson, nextRunAt, now]
+       RETURNING ${WATCHLIST_SELECT_COLUMNS}`,
+      [id, intervalMinutes, intervalSeconds, status, webhookUrl, emitJson, expiresAtValue ? new Date(expiresAtValue) : null, burstConfigInput ? asJson(burstConfigInput) : null, nextRunAt, now]
     );
     return result.rows[0] ? mapWatchlistRow(result.rows[0]) : undefined;
   }
 
   async claimNextDueWatchlist(_workerId: string, now: string): Promise<Watchlist | undefined> {
     return this.inTransaction(async (client) => {
+      const nowDate = new Date(now);
+      await client.query(
+        `UPDATE watchlists
+         SET status = 'expired', updated_at = $1
+         WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= $1`,
+        [nowDate]
+      );
       const result = await client.query<WatchlistRow>(
-        `SELECT id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, last_run_at, next_run_at, latest_run_id, created_at, updated_at
+        `SELECT ${WATCHLIST_SELECT_COLUMNS}
          FROM watchlists
-         WHERE status = 'active' AND next_run_at <= $1
+         WHERE status = 'active' AND next_run_at <= $1 AND (expires_at IS NULL OR expires_at > $1)
          ORDER BY next_run_at ASC
          LIMIT 1
          FOR UPDATE SKIP LOCKED`,
-        [new Date(now)]
+        [nowDate]
       );
       const row = result.rows[0];
       if (!row) {
         return undefined;
       }
-      const nextRunAt = new Date(new Date(now).getTime() + row.interval_minutes * 60_000);
+      const watchlist = mapWatchlistRow(row);
+      const nextRunAt = new Date(nowDate.getTime() + getEffectiveWatchIntervalSeconds(watchlist, nowDate) * 1000);
       const updated = await client.query<WatchlistRow>(
         `UPDATE watchlists SET next_run_at = $2, updated_at = $3
          WHERE id = $1
-         RETURNING id, requested_url, normalized_requested_url, interval_minutes, status, webhook_url, emit_json, last_run_at, next_run_at, latest_run_id, created_at, updated_at`,
-        [row.id, nextRunAt, new Date(now)]
+         RETURNING ${WATCHLIST_SELECT_COLUMNS}`,
+        [row.id, nextRunAt, nowDate]
       );
       const updatedRow = updated.rows[0];
       if (!updatedRow) {
@@ -1280,10 +1508,10 @@ export class PostgresCaptureRepository implements CaptureRepository {
     const id = createId();
     const result = await this.pool.query<WatchlistRunRow>(
       `INSERT INTO watchlist_runs (
-        id, watchlist_id, normalized_requested_url, status, change_summary, proof_bundle_hashes, checkpoint_ids, created_at
-      ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8)
-      RETURNING id, watchlist_id, capture_id, previous_capture_id, newer_capture_id, normalized_requested_url, status, change_detected, change_summary, proof_bundle_hashes, checkpoint_ids, created_at, completed_at, error_message`,
-      [id, input.watchlistId, input.normalizedRequestedUrl, "started", asJson([]), asJson({}), asJson({}), now]
+        id, watchlist_id, normalized_requested_url, status, outcome, change_summary, proof_bundle_hashes, checkpoint_ids, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9)
+      RETURNING ${WATCHLIST_RUN_SELECT_COLUMNS}`,
+      [id, input.watchlistId, input.normalizedRequestedUrl, "started", null, asJson([]), asJson({}), asJson({}), now]
     );
     const row = result.rows[0];
     if (!row) { throw new Error("Failed to create watchlist run"); }
@@ -1292,17 +1520,18 @@ export class PostgresCaptureRepository implements CaptureRepository {
 
   async completeWatchlistRun(input: CompleteWatchlistRunInput): Promise<WatchlistRun> {
     return this.inTransaction(async (client) => {
+      const completedAt = new Date(input.completedAt);
       const updated = await client.query<WatchlistRunRow>(
-        `UPDATE watchlist_runs SET capture_id = $2, previous_capture_id = $3, newer_capture_id = $4, status = $5, change_detected = $6, change_summary = $7::jsonb, proof_bundle_hashes = $8::jsonb, checkpoint_ids = $9::jsonb, completed_at = $10
+        `UPDATE watchlist_runs SET capture_id = $2, previous_capture_id = $3, newer_capture_id = $4, status = $5, outcome = $6, http_status = $7, resolved_url = $8, previous_resolved_url = $9, state_changed = $10, availability_transition = $11, redirect_changed = $12, change_detected = $13, change_summary = $14::jsonb, proof_bundle_hashes = $15::jsonb, checkpoint_ids = $16::jsonb, completed_at = $17
          WHERE id = $1
-         RETURNING id, watchlist_id, capture_id, previous_capture_id, newer_capture_id, normalized_requested_url, status, change_detected, change_summary, proof_bundle_hashes, checkpoint_ids, created_at, completed_at, error_message`,
-        [input.watchlistRunId, input.captureId ?? input.newerCaptureId ?? null, input.previousCaptureId ?? null, input.newerCaptureId ?? null, "completed", input.changeDetected, asJson(input.changeSummary), asJson(input.proofBundleHashes), asJson(input.checkpointIds), new Date(input.completedAt)]
+         RETURNING ${WATCHLIST_RUN_SELECT_COLUMNS}`,
+        [input.watchlistRunId, input.captureId ?? input.newerCaptureId ?? null, input.previousCaptureId ?? null, input.newerCaptureId ?? null, "completed", input.outcome ?? null, input.httpStatus ?? null, input.resolvedUrl ?? null, input.previousResolvedUrl ?? null, input.stateChanged ?? null, input.availabilityTransition ?? null, input.redirectChanged ?? null, input.changeDetected, asJson(input.changeSummary), asJson(input.proofBundleHashes), asJson(input.checkpointIds), completedAt]
       );
       const run = updated.rows[0];
       if (!run) { throw new Error(`Failed to complete watchlist run ${input.watchlistRunId}`); }
       await client.query(
-        `UPDATE watchlists SET last_run_at = $2, latest_run_id = $3, updated_at = $2 WHERE id = $1`,
-        [run.watchlist_id, new Date(input.completedAt), input.watchlistRunId]
+        `UPDATE watchlists SET last_run_at = $2, last_checked_at = COALESCE($3, last_checked_at), last_successful_fetch_at = COALESCE($4, last_successful_fetch_at), last_state_change_at = COALESCE($5, last_state_change_at), last_http_status = COALESCE($6, last_http_status), last_resolved_url = COALESCE($7, last_resolved_url), failure_count = COALESCE($8, failure_count), last_error_code = $9, latest_run_id = $10, status = COALESCE($11, status), updated_at = $2 WHERE id = $1`,
+        [run.watchlist_id, completedAt, input.lastCheckedAt ? new Date(input.lastCheckedAt) : completedAt, input.lastSuccessfulFetchAt ? new Date(input.lastSuccessfulFetchAt) : null, input.lastStateChangeAt ? new Date(input.lastStateChangeAt) : null, input.lastHttpStatus ?? null, input.lastResolvedUrl ?? null, input.failureCount ?? null, input.lastErrorCode ?? null, input.watchlistRunId, input.watchStatus ?? null]
       );
       return mapWatchlistRunRow(run);
     });
@@ -1310,22 +1539,25 @@ export class PostgresCaptureRepository implements CaptureRepository {
 
   async failWatchlistRun(input: FailWatchlistRunInput): Promise<WatchlistRun> {
     return this.inTransaction(async (client) => {
-      const now = new Date();
+      const completedAt = new Date(input.completedAt ?? new Date().toISOString());
       const updated = await client.query<WatchlistRunRow>(
-        `UPDATE watchlist_runs SET status = $2, error_message = $3, completed_at = $4 WHERE id = $1
-         RETURNING id, watchlist_id, capture_id, previous_capture_id, newer_capture_id, normalized_requested_url, status, change_detected, change_summary, proof_bundle_hashes, checkpoint_ids, created_at, completed_at, error_message`,
-        [input.watchlistRunId, "failed", input.errorMessage, now]
+        `UPDATE watchlist_runs SET status = $2, outcome = $3, http_status = $4, resolved_url = $5, previous_resolved_url = $6, state_changed = $7, availability_transition = $8, redirect_changed = $9, error_message = $10, completed_at = $11 WHERE id = $1
+         RETURNING ${WATCHLIST_RUN_SELECT_COLUMNS}`,
+        [input.watchlistRunId, "failed", input.outcome ?? null, input.httpStatus ?? null, input.resolvedUrl ?? null, input.previousResolvedUrl ?? null, input.stateChanged ?? null, input.availabilityTransition ?? null, input.redirectChanged ?? null, input.errorMessage, completedAt]
       );
       const run = updated.rows[0];
       if (!run) { throw new Error(`Failed to fail watchlist run ${input.watchlistRunId}`); }
-      await client.query(`UPDATE watchlists SET last_run_at = $2, latest_run_id = $3, updated_at = $2 WHERE id = $1`, [run.watchlist_id, now, input.watchlistRunId]);
+      await client.query(
+        `UPDATE watchlists SET last_run_at = $2, last_checked_at = COALESCE($3, last_checked_at), last_state_change_at = COALESCE($4, last_state_change_at), last_http_status = COALESCE($5, last_http_status), last_resolved_url = COALESCE($6, last_resolved_url), failure_count = COALESCE($7, failure_count), last_error_code = COALESCE($8, last_error_code), latest_run_id = $9, status = COALESCE($10, status), updated_at = $2 WHERE id = $1`,
+        [run.watchlist_id, completedAt, input.lastCheckedAt ? new Date(input.lastCheckedAt) : completedAt, input.lastStateChangeAt ? new Date(input.lastStateChangeAt) : null, input.lastHttpStatus ?? null, input.lastResolvedUrl ?? null, input.failureCount ?? null, input.lastErrorCode ?? null, input.watchlistRunId, input.watchStatus ?? null]
+      );
       return mapWatchlistRunRow(run);
     });
   }
 
   async listWatchlistRuns(watchlistId: string): Promise<WatchlistRun[]> {
     const result = await this.pool.query<WatchlistRunRow>(
-      `SELECT id, watchlist_id, capture_id, previous_capture_id, newer_capture_id, normalized_requested_url, status, change_detected, change_summary, proof_bundle_hashes, checkpoint_ids, created_at, completed_at, error_message
+      `SELECT ${WATCHLIST_RUN_SELECT_COLUMNS}
        FROM watchlist_runs WHERE watchlist_id = $1 ORDER BY created_at DESC`,
       [watchlistId]
     );
@@ -1360,6 +1592,12 @@ export class PostgresCaptureRepository implements CaptureRepository {
     await this.pool.end();
   }
 }
+
+
+
+
+
+
 
 
 

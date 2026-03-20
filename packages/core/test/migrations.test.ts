@@ -18,7 +18,8 @@ describe("runMigrations", () => {
       "005_backfill_capture_projection_columns.sql",
       "006_watchlists_and_pdf_support.sql",
       "007_rendered_evidence_and_pdf_approvals.sql",
-      "008_capture_approval_semantics.sql"
+      "008_capture_approval_semantics.sql",
+      "009_smart_watchlists.sql"
     ]);
 
     for (const tableName of [

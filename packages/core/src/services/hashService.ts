@@ -5,7 +5,7 @@ import type { CanonicalContent, CanonicalMetadata, CaptureArtifactType, CaptureS
 import { hashStableValue, normalizeValue } from "../utils/stableJson.js";
 
 export const HASH_ALGORITHM = "sha256-v1";
-export const PROOF_BUNDLE_SCHEMA_VERSION = 3;
+export const PROOF_BUNDLE_SCHEMA_VERSION = 5;
 
 export type HashBundle = {
   rawSnapshotHash: string;
@@ -25,6 +25,10 @@ export class HashService {
   }
 
   hashPdfFile(buffer: Buffer): string {
+    return this.hashBuffer(buffer);
+  }
+
+  hashImageFile(buffer: Buffer): string {
     return this.hashBuffer(buffer);
   }
 
@@ -56,6 +60,7 @@ export class HashService {
     screenshotHash?: string;
     canonicalContentHash: string;
     metadataHash: string;
+    attestationBundleHash?: string;
     createdAt: string;
   }): HashBundle {
     const proofBundle: ProofBundle = {
@@ -80,6 +85,7 @@ export class HashService {
       screenshotHash: input.screenshotHash,
       canonicalContentHash: input.canonicalContentHash,
       metadataHash: input.metadataHash,
+      attestationBundleHash: input.attestationBundleHash,
       createdAt: input.createdAt
     };
 
@@ -92,3 +98,4 @@ export class HashService {
     };
   }
 }
+

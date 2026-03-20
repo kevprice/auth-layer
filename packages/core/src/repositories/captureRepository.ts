@@ -8,6 +8,7 @@ import type {
   ContentExtractionStatus,
   CreateWatchlistRequest,
   PageKind,
+  AttestationBundle,
   PdfApprovalMethod,
   PdfApprovalReceipt,
   PdfApprovalScope,
@@ -27,6 +28,32 @@ export type CreateCaptureInput = {
   requestedUrl: string;
   normalizedRequestedUrl: string;
   extractorVersion: string;
+};
+
+export type CreateArticleCaptureInput = {
+  requestedUrl: string;
+  normalizedRequestedUrl: string;
+  extractorVersion: string;
+  sourceLabel: string;
+  fileName?: string;
+  mediaType: string;
+  byteSize: number;
+  rawHtmlStorageKey: string;
+  rawSnapshotHash: string;
+  articleInputStorageKey: string;
+};
+
+export type CreateImageCaptureInput = {
+  requestedUrl: string;
+  normalizedRequestedUrl: string;
+  extractorVersion: string;
+  sourceLabel: string;
+  fileName: string;
+  mediaType: string;
+  byteSize: number;
+  rawImageStorageKey: string;
+  rawSnapshotHash: string;
+  imageInputStorageKey?: string;
 };
 
 export type CreatePdfCaptureInput = {
@@ -107,16 +134,46 @@ export type CompleteWatchlistRunInput = {
   captureId?: string;
   previousCaptureId?: string;
   newerCaptureId?: string;
+  outcome?: WatchlistRun["outcome"];
+  httpStatus?: number;
+  resolvedUrl?: string;
+  previousResolvedUrl?: string;
+  stateChanged?: boolean;
+  availabilityTransition?: WatchlistRun["availabilityTransition"];
+  redirectChanged?: boolean;
   changeDetected: boolean;
   changeSummary: string[];
   proofBundleHashes: { older?: string; newer?: string };
   checkpointIds: { older?: string; newer?: string };
   completedAt: string;
+  lastCheckedAt?: string;
+  lastSuccessfulFetchAt?: string;
+  lastStateChangeAt?: string;
+  lastHttpStatus?: number;
+  lastResolvedUrl?: string;
+  failureCount?: number;
+  lastErrorCode?: string;
+  watchStatus?: Watchlist["status"];
 };
 
 export type FailWatchlistRunInput = {
   watchlistRunId: string;
   errorMessage: string;
+  outcome?: WatchlistRun["outcome"];
+  httpStatus?: number;
+  resolvedUrl?: string;
+  previousResolvedUrl?: string;
+  stateChanged?: boolean;
+  availabilityTransition?: WatchlistRun["availabilityTransition"];
+  redirectChanged?: boolean;
+  completedAt?: string;
+  lastCheckedAt?: string;
+  lastStateChangeAt?: string;
+  lastHttpStatus?: number;
+  lastResolvedUrl?: string;
+  failureCount?: number;
+  lastErrorCode?: string;
+  watchStatus?: Watchlist["status"];
 };
 
 export type WatchlistNotificationDeliveryInput = {
@@ -127,6 +184,12 @@ export type WatchlistNotificationDeliveryInput = {
   payload: WatchlistResultPayload;
   responseStatus?: number;
   errorMessage?: string;
+};
+
+export type AttestationBundleInput = {
+  captureId: string;
+  attestationBundle: AttestationBundle;
+  artifact: ArtifactReferenceInput;
 };
 
 export type ApprovalReceiptInput = {
@@ -141,7 +204,9 @@ export type ApprovalReceiptInput = {
 
 export interface CaptureRepository {
   createCapture(input: CreateCaptureInput): Promise<CaptureRecord>;
+  createArticleCapture(input: CreateArticleCaptureInput): Promise<CaptureRecord>;
   createPdfCapture(input: CreatePdfCaptureInput): Promise<CaptureRecord>;
+  createImageCapture(input: CreateImageCaptureInput): Promise<CaptureRecord>;
   getCapture(id: string): Promise<CaptureRecord | undefined>;
   getCaptureByReceiptId(receiptId: string): Promise<CaptureRecord | undefined>;
   listCapturesForUrl(normalizedRequestedUrl: string): Promise<CaptureRecord[]>;
@@ -157,6 +222,7 @@ export interface CaptureRepository {
   listWatchlistRuns(watchlistId: string): Promise<WatchlistRun[]>;
   recordWatchlistNotificationDelivery(input: WatchlistNotificationDeliveryInput): Promise<WatchlistNotificationDelivery>;
   recordApprovalReceipt(input: ApprovalReceiptInput): Promise<CaptureRecord>;
+  recordAttestationBundle(input: AttestationBundleInput): Promise<CaptureRecord>;
   getApprovalReceipt(id: string): Promise<PdfApprovalReceipt | undefined>;
   listWatchlistNotificationDeliveries(watchlistRunId: string): Promise<WatchlistNotificationDelivery[]>;
   recordFetchCompleted(input: FetchCompletedInput): Promise<CaptureRecord>;
@@ -189,3 +255,6 @@ export const mergeCaptureRecord = (
   },
   updatedAt
 });
+
+
+

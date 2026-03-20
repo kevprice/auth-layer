@@ -174,6 +174,7 @@ describe("capture API", () => {
       "metadata",
       "rendered-evidence",
       "operator-observation",
+      "attestations",
       "uploader-approval"
     ]);
     expect(exportPayload.pdfQualityDiagnostics).toBeUndefined();
@@ -257,3 +258,5 @@ describe("capture API", () => {
     expect(artifacts).toHaveLength(4);
   });
 });
+
+

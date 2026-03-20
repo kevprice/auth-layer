@@ -2,9 +2,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type {
+  AttestationBundle,
   CanonicalContent,
   CanonicalMetadata,
   CaptureDetail,
+  LineageBundle,
   OperatorPublicKey,
   ProofBundle,
   ProofPackageDiagnostics,
@@ -18,6 +20,7 @@ import type {
   TransparencyLogEntry,
   TransparencyReceipt
 } from "@auth-layer/shared";
+import { computeContentAttestationHash, hashAttestationBundle, hashLineageBundle, summarizeAttestationBundle, summarizeLineageBundle, validateLineageBundle } from "@auth-layer/shared";
 
 import type { CaptureRepository } from "../repositories/captureRepository.js";
 import type { ObjectStore } from "../storage/objectStore.js";
@@ -25,6 +28,8 @@ import { hashStableValue, stableStringify } from "../utils/stableJson.js";
 import { hashMerkleLeaf, verifyMerkleInclusionProof } from "../utils/merkleTransparency.js";
 import { buildEvidenceLayerSummaries, derivePdfQualityDiagnostics } from "../utils/evidenceSummaries.js";
 import { HashService } from "./hashService.js";
+import { buildArticleRevisionLineage } from "./articleService.js";
+import { verifyContentAttestationSignature } from "./attestationService.js";
 import { verifyPdfApprovalReceiptSignature } from "./pdfApprovalService.js";
 import type { CaptureProcessor } from "./captureProcessor.js";
 import type { TimestampProvider } from "./timestampProvider.js";
@@ -36,10 +41,13 @@ const CAPTURE_RECORD_FILE = "capture-record.json";
 const RAW_SNAPSHOT_FILE = "raw-snapshot.json";
 const RAW_HTML_FILE = "raw-snapshot.html";
 const RAW_PDF_FILE = "source-file.pdf";
+const RAW_IMAGE_FILE = "source-image.bin";
 const SCREENSHOT_FILE = "rendered-screenshot.png";
 const CANONICAL_CONTENT_FILE = "canonical-content.json";
 const METADATA_FILE = "metadata.json";
 const DIAGNOSTICS_FILE = "diagnostics.json";
+const LINEAGE_BUNDLE_FILE = "lineage.json";
+const ATTESTATION_BUNDLE_FILE = "attestations.json";
 const PROOF_BUNDLE_FILE = "proof-bundle.json";
 const RECEIPT_FILE = "receipt.json";
 const APPROVAL_RECEIPT_FILE = "approval-receipt.json";
@@ -91,6 +99,8 @@ const buildProofPackageDiagnostics = (input: {
   detail: CaptureDetail;
   transparencyLogEntry?: TransparencyLogEntry;
   transparencyCheckpoint?: TransparencyCheckpoint;
+  lineageBundle?: LineageBundle;
+  attestationBundle?: AttestationBundle;
 }): ProofPackageDiagnostics => ({
   schemaVersion: 2,
   artifactType: input.detail.capture.artifactType,
@@ -132,7 +142,7 @@ const buildProofPackageDiagnostics = (input: {
             }
           : input.detail.capture.renderedEvidence.userAgentLabel
             ? { userAgentLabel: input.detail.capture.renderedEvidence.userAgentLabel }
-            : undefined
+            : undefined,
       }
     : undefined,
   approval: input.detail.capture.approvalReceiptId || input.detail.capture.actorAccountId || input.detail.capture.approvalType
@@ -153,7 +163,9 @@ const buildProofPackageDiagnostics = (input: {
         }
       : undefined,
   evidenceLayers: buildEvidenceLayerSummaries(input.detail),
-  pdfQualityDiagnostics: derivePdfQualityDiagnostics(input.detail)
+  pdfQualityDiagnostics: derivePdfQualityDiagnostics(input.detail),
+  lineageSummary: summarizeLineageBundle(input.lineageBundle),
+  attestationSummary: summarizeAttestationBundle(input.attestationBundle)
 });
 const requiredCheck = (name: string, ok: boolean, details: string): ProofPackageVerificationCheck => ({ name, ok, details });
 
@@ -165,7 +177,7 @@ export class ProofPackageService {
     private readonly transparencyLogService: TransparencyLogService
   ) {}
 
-  async writePackage(captureId: string, outputDirectory: string): Promise<{ manifestPath: string }> {
+  async writePackage(captureId: string, outputDirectory: string, options?: { lineageBundle?: LineageBundle }): Promise<{ manifestPath: string }> {
     const detail = await this.processor.loadCaptureDetail(captureId);
     if (!detail) {
       throw new Error(`Capture ${captureId} not found`);
@@ -181,16 +193,56 @@ export class ProofPackageService {
       detail.receipt?.transparencyCheckpointId
     );
     const operatorPublicKey = this.transparencyLogService.getOperatorPublicKey();
+    const currentArticleObject = detail.metadata?.articleObject ?? detail.canonicalContent?.articleObject;
+    const previousCompletedCapture = detail.capture.artifactType === "article-publish"
+      ? (await this.repository.listCapturesForUrl(detail.capture.normalizedRequestedUrl)).find(
+          (candidate) => candidate.id !== detail.capture.id && candidate.status === "completed"
+        )
+      : undefined;
+    const previousDetail = previousCompletedCapture ? await this.processor.loadCaptureDetail(previousCompletedCapture.id) : undefined;
+    const previousArticleObject = previousDetail?.metadata?.articleObject ?? previousDetail?.canonicalContent?.articleObject;
+    const sameArticleIdentity = Boolean(
+      currentArticleObject &&
+      previousArticleObject &&
+      currentArticleObject.siteIdentifier === previousArticleObject.siteIdentifier &&
+      currentArticleObject.postId === previousArticleObject.postId
+    );
+    const lineageBundle = options?.lineageBundle ?? (
+      detail.capture.artifactType === "article-publish" && detail.canonicalContent?.bodyMarkdown && sameArticleIdentity
+        ? buildArticleRevisionLineage({
+            currentCaptureId: detail.capture.id,
+            currentText: detail.canonicalContent.bodyMarkdown,
+            currentTitle: detail.metadata?.title ?? detail.canonicalContent.title,
+            currentCapturedAt: detail.capture.capturedAt,
+            currentSourceLabel: detail.capture.sourceLabel,
+            previousCaptureId: previousDetail?.capture.id,
+            previousText: previousDetail?.canonicalContent?.bodyMarkdown,
+            previousTitle: previousDetail?.metadata?.title ?? previousDetail?.canonicalContent?.title,
+            previousCapturedAt: previousDetail?.capture.capturedAt,
+            previousSourceLabel: previousDetail?.capture.sourceLabel
+          })
+        : undefined
+    );
+    const lineageValidation = lineageBundle ? validateLineageBundle(lineageBundle) : undefined;
+    if (lineageValidation && !lineageValidation.ok) {
+      throw new Error(`Cannot export proof package with invalid lineage: ${lineageValidation.errors.map((warning) => warning.message).join("; ")}`);
+    }
+    const lineageBundleHash = lineageBundle ? await hashLineageBundle(lineageBundle) : undefined;
     const diagnostics = buildProofPackageDiagnostics({
       detail,
       transparencyLogEntry: entry,
-      transparencyCheckpoint: checkpoint
+      transparencyCheckpoint: checkpoint,
+      lineageBundle,
+      attestationBundle: detail.attestationBundle
     });
     const rawHtml = detail.capture.artifacts.rawHtmlStorageKey
       ? await this.objectStore.getText(detail.capture.artifacts.rawHtmlStorageKey)
       : undefined;
     const rawPdf = detail.capture.artifacts.rawPdfStorageKey
       ? await this.objectStore.getObject(detail.capture.artifacts.rawPdfStorageKey)
+      : undefined;
+    const rawImage = detail.capture.artifacts.rawImageStorageKey
+      ? await this.objectStore.getObject(detail.capture.artifacts.rawImageStorageKey)
       : undefined;
     const screenshot = detail.capture.artifacts.screenshotStorageKey
       ? await this.objectStore.getObject(detail.capture.artifacts.screenshotStorageKey)
@@ -212,11 +264,21 @@ export class ProofPackageService {
     if (rawPdf) {
       await writeFile(join(targetDirectory, RAW_PDF_FILE), rawPdf.body);
     }
+    if (rawImage) {
+      await writeFile(join(targetDirectory, RAW_IMAGE_FILE), rawImage.body);
+    }
     if (screenshot) {
       await writeFile(join(targetDirectory, SCREENSHOT_FILE), screenshot.body);
     }
+    if (lineageBundle) {
+      await writeJson(join(targetDirectory, LINEAGE_BUNDLE_FILE), lineageBundle);
+    }
+    if (detail.attestationBundle) {
+      await writeJson(join(targetDirectory, ATTESTATION_BUNDLE_FILE), detail.attestationBundle);
+    }
 
-    await writeJson(join(targetDirectory, CAPTURE_RECORD_FILE), detail.capture);
+    const exportedCapture = { ...detail.capture };
+    await writeJson(join(targetDirectory, CAPTURE_RECORD_FILE), exportedCapture);
     if (detail.canonicalContent) {
       await writeJson(join(targetDirectory, CANONICAL_CONTENT_FILE), detail.canonicalContent);
     }
@@ -233,7 +295,8 @@ export class ProofPackageService {
     if (detail.approvalReceipt) {
       await writeJson(join(targetDirectory, APPROVAL_RECEIPT_FILE), detail.approvalReceipt);
     }
-    await writeJson(join(targetDirectory, TRANSPARENCY_EXPORT_FILE), transparencyExport);
+    const exportedTransparency = { ...transparencyExport, capture: exportedCapture, lineageBundle, attestationBundle: detail.attestationBundle };
+    await writeJson(join(targetDirectory, TRANSPARENCY_EXPORT_FILE), exportedTransparency);
     if (entry) {
       await writeJson(join(targetDirectory, TRANSPARENCY_LOG_ENTRY_FILE), entry);
     }
@@ -246,7 +309,7 @@ export class ProofPackageService {
     await writeJson(join(targetDirectory, OPERATOR_PUBLIC_KEY_FILE), operatorPublicKey);
 
     const manifest: ProofPackageManifest = {
-      schemaVersion: 7,
+      schemaVersion: 9,
       artifactType: detail.capture.artifactType,
       sourceLabel: detail.capture.sourceLabel,
       fileName: detail.capture.fileName,
@@ -258,6 +321,8 @@ export class ProofPackageService {
       requestedUrl: detail.capture.requestedUrl,
       finalUrl: detail.capture.finalUrl,
       proofBundleHash: detail.capture.proofBundleHash,
+      lineageBundleHash,
+      attestationBundleHash: detail.proofBundle?.attestationBundleHash,
       canonicalContentHash: detail.capture.canonicalContentHash,
       metadataHash: detail.capture.metadataHash,
       rawSnapshotHash: detail.capture.rawSnapshotHash,
@@ -269,11 +334,14 @@ export class ProofPackageService {
         rawSnapshot: { path: RAW_SNAPSHOT_FILE, mediaType: "application/json; charset=utf-8", optional: !rawSnapshot },
         rawHtml: { path: RAW_HTML_FILE, mediaType: "text/html; charset=utf-8", optional: rawHtml === undefined },
         rawPdf: { path: RAW_PDF_FILE, mediaType: detail.capture.mediaType ?? "application/pdf", optional: rawPdf === undefined },
+        rawImage: { path: RAW_IMAGE_FILE, mediaType: detail.capture.mediaType ?? "application/octet-stream", optional: rawImage === undefined },
         screenshot: { path: SCREENSHOT_FILE, mediaType: screenshot?.contentType ?? "image/png", optional: screenshot === undefined },
         captureRecord: { path: CAPTURE_RECORD_FILE, mediaType: "application/json; charset=utf-8" },
         canonicalContent: { path: CANONICAL_CONTENT_FILE, mediaType: "application/json; charset=utf-8", optional: !detail.canonicalContent },
         metadata: { path: METADATA_FILE, mediaType: "application/json; charset=utf-8", optional: !detail.metadata },
         diagnostics: { path: DIAGNOSTICS_FILE, mediaType: "application/json; charset=utf-8" },
+        lineageBundle: { path: LINEAGE_BUNDLE_FILE, mediaType: "application/json; charset=utf-8", optional: !lineageBundle },
+        attestationBundle: { path: ATTESTATION_BUNDLE_FILE, mediaType: "application/json; charset=utf-8", optional: !detail.attestationBundle },
         proofBundle: { path: PROOF_BUNDLE_FILE, mediaType: "application/json; charset=utf-8", optional: !detail.proofBundle },
         receipt: { path: RECEIPT_FILE, mediaType: "application/json; charset=utf-8", optional: !detail.receipt },
         approvalReceipt: { path: APPROVAL_RECEIPT_FILE, mediaType: "application/json; charset=utf-8", optional: !detail.approvalReceipt },
@@ -296,6 +364,7 @@ export const verifyProofPackageDirectory = async (
     timestampProvider?: TimestampProvider;
     trustedOperatorKeys?: OperatorPublicKey[];
     checkpoint?: TransparencyCheckpoint;
+    inspectLineage?: boolean;
   }
 ): Promise<ProofPackageVerificationReport> => {
   const targetDirectory = resolve(directory);
@@ -314,7 +383,7 @@ export const verifyProofPackageDirectory = async (
   };
 
   const manifest = await readRequiredJson<ProofPackageManifest>(MANIFEST_FILE);
-  const captureRecord = await readRequiredJson<{ id: string; rawSnapshotHash?: string; canonicalContentHash?: string; metadataHash?: string; proofBundleHash?: string }>(
+  const captureRecord = await readRequiredJson<{ id: string; rawSnapshotHash?: string; canonicalContentHash?: string; metadataHash?: string; proofBundleHash?: string; lineageBundleHash?: string; attestationBundleHash?: string }>(
     manifest.files.captureRecord.path
   );
   const rawSnapshot = await readOptionalJson<RawSnapshot>(manifest.files.rawSnapshot.path, manifest.files.rawSnapshot.optional);
@@ -326,6 +395,11 @@ export const verifyProofPackageDirectory = async (
       ? await readFile(join(targetDirectory, manifest.files.rawPdf.path)).catch(() => undefined)
       : await readFile(join(targetDirectory, manifest.files.rawPdf.path))
     : undefined;
+  const rawImage = manifest.files.rawImage
+    ? manifest.files.rawImage.optional
+      ? await readFile(join(targetDirectory, manifest.files.rawImage.path)).catch(() => undefined)
+      : await readFile(join(targetDirectory, manifest.files.rawImage.path))
+    : undefined;
   const canonicalContent = await readOptionalJson<CanonicalContent>(manifest.files.canonicalContent.path, manifest.files.canonicalContent.optional);
   const metadata = await readOptionalJson<CanonicalMetadata>(manifest.files.metadata.path, manifest.files.metadata.optional);
   const screenshot = manifest.files.screenshot
@@ -335,6 +409,12 @@ export const verifyProofPackageDirectory = async (
     : undefined;
   const diagnostics = manifest.files.diagnostics
     ? await readOptionalJson<ProofPackageDiagnostics>(manifest.files.diagnostics.path, manifest.files.diagnostics.optional)
+    : undefined;
+  const lineageBundle = manifest.files.lineageBundle
+    ? await readOptionalJson<LineageBundle>(manifest.files.lineageBundle.path, manifest.files.lineageBundle.optional)
+    : undefined;
+  const attestationBundle = manifest.files.attestationBundle
+    ? await readOptionalJson<AttestationBundle>(manifest.files.attestationBundle.path, manifest.files.attestationBundle.optional)
     : undefined;
   const proofBundle = await readOptionalJson<ProofBundle>(manifest.files.proofBundle.path, manifest.files.proofBundle.optional);
   const receipt = await readOptionalJson<TransparencyReceipt>(manifest.files.receipt.path, manifest.files.receipt.optional);
@@ -359,6 +439,11 @@ export const verifyProofPackageDirectory = async (
   );
 
   const effectiveCheckpoint = options?.checkpoint ?? packageCheckpoint;
+  const effectiveTrustedKeys = options?.trustedOperatorKeys?.length
+    ? options.trustedOperatorKeys
+    : operatorPublicKey
+      ? [operatorPublicKey]
+      : [];
   const hashService = new HashService();
   const checks: ProofPackageVerificationCheck[] = [];
 
@@ -374,6 +459,12 @@ export const verifyProofPackageDirectory = async (
     const rawPdfHash = hashService.hashPdfFile(rawPdf);
     checks.push(requiredCheck("raw-pdf-hash", rawPdfHash === manifest.rawSnapshotHash, "Recomputed PDF file hash matches manifest."));
     checks.push(requiredCheck("raw-pdf-hash-record", rawPdfHash === captureRecord.rawSnapshotHash, "Recomputed PDF file hash matches capture record."));
+  }
+
+  if (rawImage) {
+    const rawImageHash = hashService.hashImageFile(rawImage);
+    checks.push(requiredCheck("raw-image-hash", rawImageHash === manifest.rawSnapshotHash, "Recomputed image file hash matches manifest."));
+    checks.push(requiredCheck("raw-image-hash-record", rawImageHash === captureRecord.rawSnapshotHash, "Recomputed image file hash matches capture record."));
   }
 
   if (screenshot && proofBundle?.screenshotHash) {
@@ -407,6 +498,27 @@ export const verifyProofPackageDirectory = async (
     }
     if (metadata && diagnostics.metadata?.schemaVersion !== undefined) {
       checks.push(requiredCheck("diagnostics-metadata-schema", diagnostics.metadata.schemaVersion === metadata.schemaVersion, "Diagnostics metadata schema version matches metadata.json."));
+    }
+  }
+
+  if (lineageBundle) {
+    const lineageBundleHash = await hashLineageBundle(lineageBundle);
+    checks.push(requiredCheck("lineage-bundle-hash", lineageBundleHash === manifest.lineageBundleHash, "Recomputed lineage bundle hash matches manifest."));
+    if (proofBundle?.lineageBundleHash) {
+      checks.push(requiredCheck("lineage-bundle-hash-proof-bundle", lineageBundleHash === proofBundle.lineageBundleHash, "Recomputed lineage bundle hash matches proof-bundle.json."));
+    }
+    if (captureRecord.lineageBundleHash) {
+      checks.push(requiredCheck("lineage-bundle-hash-record", lineageBundleHash === captureRecord.lineageBundleHash, "Recomputed lineage bundle hash matches capture record."));
+    }
+    const lineageValidation = validateLineageBundle(lineageBundle);
+    checks.push(requiredCheck("lineage-graph-valid", lineageValidation.ok, lineageValidation.ok ? "Lineage graph is a valid DAG." : lineageValidation.errors.map((warning) => warning.message).join("; ")));
+  }
+
+  if (attestationBundle) {
+    const attestationBundleHash = await hashAttestationBundle(attestationBundle);
+    checks.push(requiredCheck("attestation-bundle-hash", attestationBundleHash === manifest.attestationBundleHash, "Recomputed attestation bundle hash matches manifest."));
+    if (proofBundle?.attestationBundleHash) {
+      checks.push(requiredCheck("attestation-bundle-hash-proof-bundle", attestationBundleHash === proofBundle.attestationBundleHash, "Recomputed attestation bundle hash matches proof-bundle.json."));
     }
   }
 
@@ -458,11 +570,7 @@ export const verifyProofPackageDirectory = async (
       ));
     }
 
-    const effectiveTrustedKeys = options?.trustedOperatorKeys?.length
-      ? options.trustedOperatorKeys
-      : operatorPublicKey
-        ? [operatorPublicKey]
-        : [];
+
 
     if (effectiveTrustedKeys.length) {
       checks.push(requiredCheck(
@@ -533,14 +641,82 @@ export const verifyProofPackageDirectory = async (
     }
   }
 
+  const lineageSummary = summarizeLineageBundle(lineageBundle);
+  const attestationSummary = summarizeAttestationBundle(attestationBundle);
+  const attestationVerification = attestationBundle
+    ? await Promise.all(
+        attestationBundle.attestations.map(async (attestation) => ({
+          hashMatches:
+            (await computeContentAttestationHash({
+              schemaVersion: attestation.schemaVersion,
+              id: attestation.id,
+              type: attestation.type,
+              actor: attestation.actor,
+              auth: attestation.auth,
+              timestamp: attestation.timestamp,
+              notes: attestation.notes,
+              subjectContentHash: attestation.subjectContentHash,
+              relatedContentHashes: attestation.relatedContentHashes,
+              metadata: attestation.metadata,
+              issuerOperatorId: attestation.issuerOperatorId,
+              issuerKeyId: attestation.issuerKeyId,
+              issuerPublicKeySha256: attestation.issuerPublicKeySha256,
+              signatureAlgorithm: attestation.signatureAlgorithm
+            })) === attestation.attestationHash,
+          signatureValid: effectiveTrustedKeys.length
+            ? await verifyContentAttestationSignature(attestation, effectiveTrustedKeys)
+            : false
+        }))
+      )
+    : [];
+  const verifiedCount = attestationVerification.filter((result) => result.hashMatches && result.signatureValid).length;
+  const invalidCount = attestationVerification.filter((result) => !result.hashMatches || (effectiveTrustedKeys.length > 0 && !result.signatureValid)).length;
+  const unverifiedCount = attestationVerification.length - verifiedCount - invalidCount;
   const ok = checks.every((check) => check.ok);
   return {
     ok,
     packagePath: targetDirectory,
     captureId: manifest.captureId,
-    checks
+    checks,
+    attestations: attestationSummary.hasAttestations
+      ? {
+          ...attestationSummary,
+          verifiedCount,
+          invalidCount,
+          unverifiedCount,
+          trustedKeyMaterialAvailable: effectiveTrustedKeys.length > 0
+        }
+      : undefined,
+    lineage: lineageSummary.hasLineage
+      ? {
+          ...lineageSummary,
+          nodes: options?.inspectLineage ? lineageBundle?.contentObjects : undefined,
+          edges: options?.inspectLineage ? lineageBundle?.edges : undefined
+        }
+      : undefined,
   };
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

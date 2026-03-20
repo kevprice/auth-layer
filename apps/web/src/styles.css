@@ -538,3 +538,32 @@ summary {
   border: 1px solid rgba(22, 32, 47, 0.1);
   box-shadow: 0 14px 28px rgba(56, 74, 95, 0.1);
 }
+.verifier-check-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.status-pill--verified {
+  background: rgba(64, 161, 109, 0.16);
+  color: #1f7342;
+}
+
+.status-pill--partially-verified {
+  background: rgba(245, 202, 111, 0.2);
+  color: #8a6416;
+}
+
+.verifier-order-list {
+  margin: 0;
+}
+
+.verifier-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+@media (max-width: 900px) {
+  .verifier-check-grid {
+    grid-template-columns: 1fr;
+  }
+}
