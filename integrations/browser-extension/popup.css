@@ -1,0 +1,160 @@
+body {
+  margin: 0;
+  font: 14px/1.45 "Segoe UI", sans-serif;
+  color: #17202a;
+  background: #f4f6f8;
+}
+
+.popup {
+  width: 360px;
+  padding: 16px;
+}
+
+.popup__header h1 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.popup__eyebrow {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #5c6b77;
+}
+
+.card {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d7dee4;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.card__footnote {
+  margin-top: 10px;
+}
+
+.pill {
+  display: inline-block;
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.pill--neutral {
+  background: #e2e8f0;
+  color: #1f2933;
+}
+
+.pill--available {
+  background: #d3f3df;
+  color: #1d6b42;
+}
+
+.pill--warning {
+  background: #fdecc8;
+  color: #9b5a00;
+}
+
+.muted {
+  margin: 0;
+  color: #5c6b77;
+}
+
+.summary-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.summary-list div {
+  display: grid;
+  gap: 2px;
+}
+
+.summary-list dt {
+  color: #5c6b77;
+}
+
+.summary-list dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.bullet-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.material-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.material-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #d7dee4;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.material-label {
+  font-weight: 600;
+}
+
+.material-state {
+  color: #5c6b77;
+}
+
+.material-state--yes {
+  color: #1d6b42;
+}
+
+.material-state--no,
+.material-state--unknown {
+  color: #9b5a00;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+}
+
+.actions a,
+.actions button,
+.actions input {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #b7c4cf;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #17202a;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.actions button,
+.actions input {
+  cursor: pointer;
+}
+
+.options-field {
+  width: 100%;
+  box-sizing: border-box;
+}

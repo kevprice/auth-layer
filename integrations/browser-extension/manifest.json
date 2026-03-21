@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Auth Layer Discovery",
+  "version": "0.1.1",
+  "description": "Detects authenticity manifests and previews proof materials without becoming a trust authority.",
+  "permissions": ["activeTab", "tabs", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Auth Layer Discovery",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

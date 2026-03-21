@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auth Layer Discovery</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup__header">
+        <p class="popup__eyebrow">Auth Layer Discovery</p>
+        <h1>Proof materials on this page</h1>
+      </header>
+
+      <section class="card">
+        <h2>Status</h2>
+        <p id="status-pill" class="pill pill--neutral">Checking page...</p>
+        <p id="status-copy" class="muted"></p>
+      </section>
+
+      <section class="card">
+        <h2>Summary</h2>
+        <dl id="summary-list" class="summary-list"></dl>
+      </section>
+
+      <section class="card">
+        <h2>Proof materials</h2>
+        <ul id="materials-list" class="material-list"></ul>
+        <p class="muted card__footnote">These rows describe what discovery materials the page exposes. They are not the same thing as a completed offline verification result.</p>
+      </section>
+
+      <section class="card">
+        <h2>Claims</h2>
+        <ul id="claims-list" class="bullet-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Limits</h2>
+        <ul class="bullet-list">
+          <li>This popup is a discovery and preview layer.</li>
+          <li>Identity and workflow claims are informational unless independently verified.</li>
+          <li>Offline verification still relies on a proof package, checkpoint, and operator key.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Next steps</h2>
+        <div id="actions" class="actions"></div>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

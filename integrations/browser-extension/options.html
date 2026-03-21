@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auth Layer Discovery Options</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup__header">
+        <p class="popup__eyebrow">Auth Layer Discovery</p>
+        <h1>Extension options</h1>
+      </header>
+      <section class="card">
+        <h2>Verifier URL</h2>
+        <p class="muted">Set the browser verifier URL the extension should open for deeper inspection. This does not change how proof packages are verified.</p>
+        <div class="summary-list">
+          <div>
+            <label for="verifier-url">Verifier URL</label>
+            <input id="verifier-url" class="options-field" type="url" placeholder="http://localhost:3000/#/verify" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="save-options" type="button">Save</button>
+          <button id="reset-options" type="button">Reset to default</button>
+        </div>
+        <p id="save-status" class="muted"></p>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
